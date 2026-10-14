@@ -1,0 +1,6 @@
+{
+  "identifier": "desktop",
+  "description": "ローカル編集画面と録画ツールバー。汎用ファイル操作・シェル・HTTPプラグインは許可しない。",
+  "windows": ["main", "recording", "region"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

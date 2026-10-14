@@ -1,0 +1,31 @@
+[package]
+name = "operation-video-studio"
+version = "0.1.0"
+description = "Local Windows recording and non-destructive video editor"
+authors = ["Operation Video Studio contributors"]
+edition = "2021"
+
+[lib]
+name = "ovs"
+
+[[bin]]
+name = "operation-video-studio"
+required-features = ["desktop"]
+
+[features]
+default = ["desktop"]
+desktop = ["dep:tauri", "dep:tauri-build", "dep:rfd", "dep:windows-sys"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+tempfile = "3"
+tauri = { version = "2", optional = true, features = ["protocol-asset"] }
+
+[target.'cfg(windows)'.dependencies]
+rfd = { version = "0.15", optional = true }
+windows-sys = { version = "0.59", optional = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging"] }
+
+[build-dependencies]
+tauri-build = { version = "2", optional = true }
