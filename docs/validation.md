@@ -89,3 +89,9 @@ Windows列挙コールバックでIsIconicを確認し、最小化対象を除�
 日本語フォントの実描画、注釈のドラッグ操作、音声同期精度、長時間録画、実際のWindowsプレーヤー再生、exe/msi生成とインストールは未実施。ぼかしはCSSプレビューとFFmpeg出力で完全一致しない。これらを含む全9項目の受入条件は未達確認。
 
 GitHubへのcommit/push、Actions起動はしていない。配布済みインストーラーには未反映。
+
+## Windows CI の注釈書き出し互換性修正
+
+Windows CIの動画処理13件中、通常処理11件が成功し、注釈/クリックとモザイクの2件が失敗したログ画像を受領。共通経路で使っていた`-filter_complex_script`はFFmpeg現行上流から削除されているため、推奨のファイル読み込み構文`-/filter_complex`へ変更。FFmpeg 7.1.5で動画処理13件すべて成功、Windows向け型チェック成功。Windows CIでの再試験結果は未取得。
+
+Actionsのcheckout/setup-nodeをv5へ更新してNode.js 20警告に対応し、今後の原因確認用にFFmpeg/FFprobeバージョン出力を追加。

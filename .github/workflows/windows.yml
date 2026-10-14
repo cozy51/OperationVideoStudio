@@ -9,14 +9,18 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
       - name: Install FFmpeg for functional tests
         run: choco install ffmpeg --no-progress -y
+      - name: Show FFmpeg versions
+        run: |
+          ffmpeg -version
+          ffprobe -version
       - run: npm ci
       - run: npm test
       - run: npm run build

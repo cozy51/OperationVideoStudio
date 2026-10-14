@@ -771,7 +771,9 @@ pub fn export_with_overlays(
         graph.push_str(&format!("[{current}]null[v]"));
         fs::write(tmp.path().join("filters.txt"), graph).map_err(|e| e.to_string())?;
         cmd.args([
-            "-filter_complex_script",
+            // Newer FFmpeg removed -filter_complex_script. The replacement is
+            // supported by FFmpeg 7+ and avoids Windows command-line limits.
+            "-/filter_complex",
             "filters.txt",
             "-filter_complex_threads",
             "1",
