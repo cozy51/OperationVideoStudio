@@ -43,6 +43,12 @@ beforeEach(() => {
   commands.mockReset();
   commands.mockImplementation(async (command) => {
     if (command === "recover_project") return null;
+    if (
+      command === "show_capture_outline" ||
+      command === "hide_capture_outline"
+    )
+      return null;
+    if (command === "recording_folder") return "C:\\Recordings";
     if (command === "capture_targets") return [target];
     if (command === "recording_tools") return missing;
     if (command === "choose_ffmpeg_folder") return ready;
@@ -67,6 +73,12 @@ describe("録画の準備とエラー表示", () => {
   it("有効なFFmpegフォルダー選択後は録画開始できる", async () => {
     commands.mockImplementation(async (command) => {
       if (command === "recover_project") return null;
+      if (
+        command === "show_capture_outline" ||
+        command === "hide_capture_outline"
+      )
+        return null;
+      if (command === "recording_folder") return "C:\\Recordings";
       if (command === "capture_targets") return [target];
       if (command === "recording_tools") return missing;
       if (command === "choose_ffmpeg_folder") return ready;
@@ -88,12 +100,25 @@ describe("録画の準備とエラー表示", () => {
     await user.click(start);
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(commands).toHaveBeenCalledWith("start_recording", {
-      options: { target, cursor: true, quality: "standard" },
+      options: {
+        target,
+        cursor: true,
+        quality: "standard",
+        microphone: false,
+        systemAudio: false,
+        highlightClicks: false,
+      },
     });
   });
   it("録画開始のエラーをモーダル内に表示し、再試行できる", async () => {
     commands.mockImplementation(async (command) => {
       if (command === "recover_project") return null;
+      if (
+        command === "show_capture_outline" ||
+        command === "hide_capture_outline"
+      )
+        return null;
+      if (command === "recording_folder") return "C:\\Recordings";
       if (command === "capture_targets") return [target];
       if (command === "recording_tools") return ready;
       if (command === "start_recording")
@@ -121,6 +146,12 @@ describe("録画の準備とエラー表示", () => {
     });
     commands.mockImplementation(async (command) => {
       if (command === "recover_project") return null;
+      if (
+        command === "show_capture_outline" ||
+        command === "hide_capture_outline"
+      )
+        return null;
+      if (command === "recording_folder") return "C:\\Recordings";
       if (command === "capture_targets") return [target];
       if (command === "recording_tools") return ready;
       if (command === "select_region") return pending;
@@ -147,5 +178,92 @@ describe("録画の準備とエラー表示", () => {
       "領域選択ウィンドウを作成できません",
     );
     expect((select as HTMLButtonElement).disabled).toBe(false);
+  });
+  it("選択した対象の確認枠を要求し、設定を閉じると枠を消す", async () => {
+    const windowTarget = {
+      ...target,
+      id: "window-100-500",
+      kind: "window",
+      name: "SOLIDWORKS",
+    };
+    commands.mockImplementation(async (command) => {
+      if (command === "recover_project" || command === "recording_folder")
+        return null;
+      if (command === "capture_targets") return [target, windowTarget];
+      if (command === "recording_tools") return ready;
+      if (
+        command === "show_capture_outline" ||
+        command === "hide_capture_outline"
+      )
+        return null;
+      throw new Error(command);
+    });
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "● 録画" }));
+    const dialog = screen.getByRole("dialog", { name: "画面を録画する" });
+    await user.selectOptions(
+      await within(dialog).findByLabelText("録画する対象"),
+      windowTarget.id,
+    );
+    await waitFor(() =>
+      expect(commands).toHaveBeenCalledWith("show_capture_outline", {
+        targetId: windowTarget.id,
+      }),
+    );
+    const previous = commands.mock.calls.filter(
+      ([c]) => c === "hide_capture_outline",
+    ).length;
+    await user.click(
+      within(dialog).getByRole("button", { name: "キャンセル" }),
+    );
+    await waitFor(() =>
+      expect(
+        commands.mock.calls.filter(([c]) => c === "hide_capture_outline")
+          .length,
+      ).toBeGreaterThan(previous),
+    );
+  });
+  it("選択後に最小化された対象を一覧から外し、別の対象へ自動切替しない", async () => {
+    const windowTarget = {
+      ...target,
+      id: "window-100-500",
+      kind: "window",
+      name: "SOLIDWORKS",
+    };
+    let minimized = false;
+    commands.mockImplementation(async (command, args) => {
+      if (command === "recover_project" || command === "recording_folder")
+        return null;
+      if (command === "capture_targets")
+        return minimized ? [target] : [target, windowTarget];
+      if (command === "recording_tools") return ready;
+      if (command === "hide_capture_outline") return null;
+      if (command === "show_capture_outline") {
+        if ((args as { targetId: string }).targetId === windowTarget.id) {
+          minimized = true;
+          throw new Error("録画対象が最小化されています");
+        }
+        return null;
+      }
+      throw new Error(command);
+    });
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "● 録画" }));
+    const dialog = screen.getByRole("dialog", { name: "画面を録画する" });
+    const select = await within(dialog).findByLabelText("録画する対象");
+    await user.selectOptions(select, windowTarget.id);
+    await waitFor(() => expect((select as HTMLSelectElement).value).toBe(""));
+    expect(
+      within(dialog).queryByRole("option", { name: "SOLIDWORKS" }),
+    ).toBeNull();
+    expect(
+      (
+        within(dialog).getByRole("button", {
+          name: "● 録画開始",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
   });
 });

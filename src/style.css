@@ -82,13 +82,9 @@ header {
   font-size: 12px;
 }
 .brand-icon {
-  display: grid;
-  place-items: center;
-  width: 42px;
-  height: 42px;
-  background: #2469dc;
-  color: white;
-  border-radius: 12px;
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
 }
 .toolbar {
   display: flex;
@@ -678,4 +674,234 @@ progress {
 .tool-status p {
   margin-top: 8px;
   font-size: 12px;
+}
+.clip-grip {
+  display: inline-block;
+  cursor: grab;
+  touch-action: none;
+  padding: 2px 6px;
+  margin-right: 4px;
+  border-radius: 3px;
+  background: #c9dbf8;
+  font-weight: bold;
+}
+.clip-grip:active {
+  cursor: grabbing;
+}
+.clip-number {
+  font-size: 11px;
+  font-weight: bold;
+  color: #3165ab;
+}
+.clip.drop-target {
+  outline: 3px solid #2469dc;
+  outline-offset: -3px;
+  background: #c5dbff;
+}
+.timeline-actions {
+  flex-wrap: wrap;
+}
+.recording-folder {
+  margin-top: 14px;
+  border: 1px solid #d9e5f5;
+  border-radius: 6px;
+  padding: 10px;
+  font-size: 12px;
+}
+.recording-folder p {
+  overflow-wrap: anywhere;
+  margin: 6px 0;
+}
+.recording-folder small {
+  display: block;
+  color: #71839b;
+  margin-top: 7px;
+}
+.properties input[type="text"] {
+  display: block;
+  width: 100%;
+  margin-top: 7px;
+  border: 1px solid #d8e1ef;
+  border-radius: 6px;
+  padding: 8px;
+  background: white;
+  color: #304666;
+}
+.capture-outline {
+  position: fixed;
+  inset: 0;
+  border: 5px solid #ed263c;
+  background: transparent;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+.capture-outline span {
+  position: absolute;
+  top: 0;
+  left: 0;
+  background: #ed263c;
+  color: white;
+  padding: 4px 10px;
+  font-size: 14px;
+  font-weight: bold;
+}
+.preview {
+  position: relative;
+}
+.annotation-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.annotation-layer > canvas {
+  width: 100%;
+  height: 100%;
+}
+.annotation-hit {
+  position: absolute;
+  pointer-events: auto;
+  cursor: move;
+  touch-action: none;
+}
+.annotation-hit.selected {
+  outline: 2px dashed #559eff;
+}
+.blur-mask {
+  width: 100%;
+  height: 100%;
+  backdrop-filter: blur(12px);
+}
+.mosaic-mask {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+}
+.annotation-tools {
+  border-top: 1px solid #e0e7f1;
+  padding-top: 12px;
+}
+.annotation-tools button {
+  font-size: 12px;
+  padding: 6px;
+  margin: 3px;
+}
+.annotation-track {
+  display: flex;
+  margin-top: 8px;
+}
+.annotation-bars {
+  position: relative;
+  flex: 1;
+  min-height: 44px;
+  background: #f6efff;
+  border-radius: 5px;
+}
+.annotation-bar {
+  position: absolute;
+  top: 5px;
+  min-height: 32px;
+  background: #dfcafa;
+  border: 1px solid #b491da;
+  border-radius: 5px;
+  padding: 6px 12px;
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  touch-action: none;
+  cursor: move;
+}
+.bar-edge {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  cursor: ew-resize;
+  background: #b897da;
+}
+.bar-edge.right {
+  left: auto;
+  right: 0;
+}
+.annotation-properties {
+  border-bottom: 1px solid #d8e1ef;
+  margin: 14px 0;
+  padding-bottom: 12px;
+}
+.annotation-properties input {
+  display: block;
+  width: 100%;
+  padding: 7px;
+  border: 1px solid #d8e1ef;
+  border-radius: 5px;
+}
+.gap-preview {
+  width: 100%;
+  height: 100%;
+  background: black;
+}
+.annotation-track {
+  max-height: 170px;
+  overflow-y: auto;
+}
+.preview-panel .preview {
+  height: auto;
+}
+.annotation-properties textarea {
+  width: 100%;
+  min-height: 70px;
+}
+.annotation-hit.selected:after {
+  content: "ドラッグで移動";
+  position: absolute;
+  left: 0;
+  top: -22px;
+  background: #2469dc;
+  color: white;
+  font-size: 10px;
+  padding: 3px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.audio-clips {
+  display: flex;
+  flex: 1;
+  min-height: 30px;
+}
+.audio-clips button {
+  min-width: 8px;
+  overflow: hidden;
+  font-size: 10px;
+  padding: 5px;
+  border: 1px solid #bdd8cd;
+  background: #e9f6f0;
+  border-radius: 4px;
+  margin-right: 2px;
+}
+.check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.check input {
+  width: auto !important;
+}
+.annotation-layer > canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+.mask-region {
+  position: absolute;
+  z-index: 1;
+  pointer-events: none;
+}
+.annotation-hit {
+  z-index: 3;
+}
+.annotation-drag-label {
+  pointer-events: none;
 }

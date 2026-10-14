@@ -1,26 +1,30 @@
+use crate::capture::WindowCapture;
 use crate::media::{self, Media, Project};
 use crate::recording_gate::RecordingGate;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     fs,
-    io::Write,
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, Stdio},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::Instant,
 };
 use tauri::{Emitter, Manager, State};
 use windows_sys::Win32::{
-    Foundation::{HWND, LPARAM, RECT},
-    Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO},
+    Foundation::{HWND, LPARAM, POINT, RECT},
+    Graphics::Gdi::{
+        ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
+    },
     UI::WindowsAndMessaging::{
-        EnumWindows, GetSystemMetrics, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
-        IsWindowVisible, SetWindowDisplayAffinity, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-        SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+        EnumWindows, GetClientRect, GetSystemMetrics, GetWindowRect, GetWindowTextLengthW,
+        GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible,
+        SetWindowDisplayAffinity, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+        SM_YVIRTUALSCREEN,
     },
 };
 
@@ -41,6 +45,12 @@ struct RecordOptions {
     target: Target,
     cursor: bool,
     quality: String,
+    #[serde(default)]
+    microphone: bool,
+    #[serde(default)]
+    system_audio: bool,
+    #[serde(default)]
+    highlight_clicks: bool,
 }
 struct Recording {
     options: RecordOptions,
@@ -49,6 +59,12 @@ struct Recording {
     child: Option<Child>,
     elapsed: f64,
     started: Option<Instant>,
+    audio: Option<crate::audio::AudioRecording>,
+    audio_epoch: u64,
+    first_video_epoch: Arc<AtomicU64>,
+    progress_reader: Option<std::thread::JoinHandle<()>>,
+    click_recorder: Option<crate::clicks::Recorder>,
+    click_files: Vec<PathBuf>,
 }
 #[derive(Default)]
 struct Backend {
@@ -59,6 +75,9 @@ struct Backend {
     last_output: Mutex<Option<PathBuf>>,
     targets: Mutex<Vec<Target>>,
     region: Mutex<Option<Target>>,
+    autosave_transition: Mutex<()>,
+    outline_transition: Mutex<()>,
+    outline_ready: AtomicBool,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,11 +98,21 @@ fn lock<T>(mutex: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, String> {
         .map_err(|_| "内部状態にアクセスできません".into())
 }
 fn approve(app: &tauri::AppHandle, backend: &Backend, path: &Path) -> Result<Media, String> {
-    let media = media::probe(path)?;
+    let cache = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("preview-cache");
+    let media = media::prepare_preview(path, &cache)?;
     let path = fs::canonicalize(path).map_err(|e| e.to_string())?;
     app.asset_protocol_scope()
         .allow_file(&path)
         .map_err(|e| e.to_string())?;
+    if let Some(preview) = &media.preview_path {
+        app.asset_protocol_scope()
+            .allow_file(preview)
+            .map_err(|e| e.to_string())?;
+    }
     lock(&backend.allowed)?.insert(path);
     Ok(media)
 }
@@ -91,6 +120,9 @@ fn check_project(backend: &Backend, p: &Project) -> Result<(), String> {
     media::validate(p)?;
     let allowed = lock(&backend.allowed)?;
     for m in &p.media {
+        if m.kind.as_deref() == Some("gap") {
+            continue;
+        }
         let path =
             fs::canonicalize(&m.path).map_err(|_| format!("元動画が見つかりません: {}", m.name))?;
         if !allowed.contains(&path) {
@@ -169,6 +201,44 @@ async fn choose_ffmpeg_folder(app: tauri::AppHandle) -> Result<Option<ToolStatus
     .await
     .map_err(|e| e.to_string())?
 }
+fn recording_folder_settings(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("recording-folder.json"))
+}
+fn choose_recording_directory(app: &tauri::AppHandle) -> Result<Option<PathBuf>, String> {
+    let settings = recording_folder_settings(app)?;
+    let last = crate::recording_storage::load_folder(&settings)?;
+    let mut dialog = rfd::FileDialog::new().set_title("録画の保存先フォルダー");
+    if let Some(folder) = last {
+        dialog = dialog.set_directory(folder);
+    }
+    dialog
+        .pick_folder()
+        .map(|folder| crate::recording_storage::save_folder(&settings, &folder))
+        .transpose()
+}
+#[tauri::command]
+fn recording_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    Ok(
+        crate::recording_storage::load_folder(&recording_folder_settings(&app)?)?
+            .map(|p| p.to_string_lossy().into_owned()),
+    )
+}
+#[tauri::command]
+async fn choose_recording_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let backend = app.state::<Backend>();
+        if backend.recording_transition.busy() || lock(&backend.recording)?.is_some() {
+            return Err("録画を停止してから保存先を変更してください".into());
+        }
+        Ok(choose_recording_directory(&app)?.map(|p| p.to_string_lossy().into_owned()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
 #[tauri::command]
 async fn import_videos(app: tauri::AppHandle) -> Result<Vec<Media>, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -231,11 +301,16 @@ async fn open_project(app: tauri::AppHandle) -> Result<Option<Project>, String> 
         if meta.len() > 10_000_000 {
             return Err("プロジェクトファイルが大きすぎます".into());
         }
-        let p: Project = serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
+        let mut p: Project = serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
             .map_err(|_| "プロジェクトJSONを読み込めません")?;
         media::validate(&p)?;
-        for m in &p.media {
-            approve(&app, &app.state::<Backend>(), Path::new(&m.path))?;
+        for m in &mut p.media {
+            if m.kind.as_deref() == Some("gap") {
+                continue;
+            }
+            let actual = approve(&app, &app.state::<Backend>(), Path::new(&m.path))?;
+            m.preview_path = actual.preview_path;
+            m.codec = actual.codec;
         }
         Ok(Some(p))
     })
@@ -243,41 +318,43 @@ async fn open_project(app: tauri::AppHandle) -> Result<Option<Project>, String> 
     .map_err(|e| e.to_string())?
 }
 #[tauri::command]
-fn autosave(app: tauri::AppHandle, project: Project) -> Result<(), String> {
-    check_project(&app.state::<Backend>(), &project)?;
-    let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join("recovery.json");
-    let mut tmp = tempfile::NamedTempFile::new_in(&dir).map_err(|e| e.to_string())?;
-    tmp.write_all(&serde_json::to_vec(&project).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    tmp.as_file().sync_all().map_err(|e| e.to_string())?;
-    tmp.persist(path).map_err(|e| e.to_string())?;
-    Ok(())
+async fn autosave(app: tauri::AppHandle, project: Project) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let backend = app.state::<Backend>();
+        let _save = lock(&backend.autosave_transition)?;
+        check_project(&backend, &project)?;
+        let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+        crate::recovery::save(&dir, &project)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[tauri::command]
-fn recover_project(app: tauri::AppHandle) -> Result<Option<Project>, String> {
-    let path = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("recovery.json");
-    if !path.exists() {
-        return Ok(None);
-    }
-    let p: Project = serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
-        .map_err(|_| "復旧データを読み込めません")?;
-    media::validate(&p)?;
-    for m in &p.media {
-        approve(&app, &app.state::<Backend>(), Path::new(&m.path))?;
-    }
-    Ok(Some(p))
+async fn recover_project(app: tauri::AppHandle) -> Result<Option<Project>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+        let Some(mut p) = crate::recovery::load(&dir)? else {
+            return Ok(None);
+        };
+        for m in &mut p.media {
+            if m.kind.as_deref() == Some("gap") {
+                continue;
+            }
+            let actual = approve(&app, &app.state::<Backend>(), Path::new(&m.path))?;
+            m.preview_path = actual.preview_path;
+            m.codec = actual.codec;
+        }
+        Ok(Some(p))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 async fn export_video(
     app: tauri::AppHandle,
     project: Project,
     resolution: String,
+    assets: Option<Vec<crate::annotations::OverlayAsset>>,
 ) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || {
         check_project(&app.state::<Backend>(), &project)?;
@@ -299,16 +376,23 @@ async fn export_video(
             *lock(&backend.export)? = None;
             return Ok(false);
         };
-        let result = media::export(&project, &path, &resolution, cancel, |progress| {
-            let _ = app.emit(
-                "export-progress",
-                ExportEvent {
-                    progress,
-                    done: false,
-                    error: None,
-                },
-            );
-        });
+        let result = media::export_with_overlays(
+            &project,
+            &path,
+            &resolution,
+            cancel,
+            |progress| {
+                let _ = app.emit(
+                    "export-progress",
+                    ExportEvent {
+                        progress,
+                        done: false,
+                        error: None,
+                    },
+                );
+            },
+            &assets.unwrap_or_default(),
+        );
         if result.is_ok() {
             *lock(&backend.last_output)? = Some(path);
         }
@@ -370,7 +454,7 @@ unsafe extern "system" fn monitor_callback(h: HMONITOR, _: HDC, _: *mut RECT, da
     1
 }
 unsafe extern "system" fn window_callback(h: HWND, data: LPARAM) -> i32 {
-    if IsWindowVisible(h) == 0 {
+    if IsWindowVisible(h) == 0 || IsIconic(h) != 0 {
         return 1;
     }
     let length = GetWindowTextLengthW(h);
@@ -385,8 +469,13 @@ unsafe extern "system" fn window_callback(h: HWND, data: LPARAM) -> i32 {
     }
     let mut r = std::mem::zeroed();
     if GetWindowRect(h, &mut r) != 0 && r.right > r.left && r.bottom > r.top {
+        let mut process_id = 0;
+        GetWindowThreadProcessId(h, &mut process_id);
+        if process_id == 0 {
+            return 1;
+        }
         (&mut *(data as *mut Vec<Target>)).push(Target {
-            id: format!("window-{}", h as usize),
+            id: format!("window-{}-{}", h as usize, process_id),
             name,
             kind: "window".into(),
             x: r.left,
@@ -429,11 +518,146 @@ fn exclude(window: &tauri::WebviewWindow) -> Result<(), String> {
     }
     Ok(())
 }
+fn hide_outline(app: &tauri::AppHandle) -> Result<(), String> {
+    let backend = app.state::<Backend>();
+    let _transition = lock(&backend.outline_transition)?;
+    backend.outline_ready.store(false, Ordering::SeqCst);
+    if let Some(window) = app.get_webview_window("capture-outline") {
+        window.destroy().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+#[tauri::command]
+async fn hide_capture_outline(app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || hide_outline(&app))
+        .await
+        .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn show_capture_outline(app: tauri::AppHandle, target_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let backend = app.state::<Backend>();
+        let _transition = lock(&backend.outline_transition)?;
+        if backend.recording_transition.busy() || lock(&backend.recording)?.is_some() {
+            return Ok(());
+        }
+        let mut target = if target_id == "region" {
+            lock(&backend.region)?.clone()
+        } else {
+            lock(&backend.targets)?
+                .iter()
+                .find(|t| t.id == target_id)
+                .cloned()
+        }
+        .ok_or("対象を再選択してください")?;
+        if target.kind == "window" {
+            if let Err(error) = window_capture_input(&target) {
+                backend.outline_ready.store(false, Ordering::SeqCst);
+                if let Some(window) = app.get_webview_window("capture-outline") {
+                    let _ = window.destroy();
+                }
+                return Err(error);
+            }
+            let identity = WindowCapture::from_target_id(&target.id)?;
+            let hwnd = identity.handle as HWND;
+            let mut rect = unsafe { std::mem::zeroed() };
+            let mut point = POINT { x: 0, y: 0 };
+            if unsafe { GetClientRect(hwnd, &mut rect) } == 0
+                || unsafe { ClientToScreen(hwnd, &mut point) } == 0
+            {
+                return Err("対象の位置を取得できません".into());
+            }
+            target.x = point.x;
+            target.y = point.y;
+            target.width = rect.right - rect.left;
+            target.height = rect.bottom - rect.top;
+        }
+        if target.width <= 0 || target.height <= 0 {
+            return Err("対象範囲が不正です".into());
+        }
+        let window = match app.get_webview_window("capture-outline") {
+            Some(window) => window,
+            None => {
+                backend.outline_ready.store(false, Ordering::SeqCst);
+                tauri::WebviewWindowBuilder::new(
+                    &app,
+                    "capture-outline",
+                    tauri::WebviewUrl::App("index.html#capture-outline".into()),
+                )
+                .title("Operation Video Studio 録画対象確認")
+                .visible(false)
+                .focused(false)
+                .focusable(false)
+                .decorations(false)
+                .transparent(true)
+                .always_on_top(true)
+                .resizable(false)
+                .build()
+                .map_err(|e| e.to_string())?
+            }
+        };
+        let result = (|| -> Result<(), String> {
+            window
+                .set_position(tauri::PhysicalPosition::new(target.x, target.y))
+                .map_err(|e| e.to_string())?;
+            window
+                .set_size(tauri::PhysicalSize::new(
+                    target.width as u32,
+                    target.height as u32,
+                ))
+                .map_err(|e| e.to_string())?;
+            window
+                .set_ignore_cursor_events(true)
+                .map_err(|e| e.to_string())?;
+            exclude(&window)?;
+            if backend.outline_ready.load(Ordering::SeqCst) {
+                window.show().map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            backend.outline_ready.store(false, Ordering::SeqCst);
+            let _ = window.destroy();
+        }
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn capture_outline_ready(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    if window.label() != "capture-outline" {
+        return Err("確認枠の画面から操作してください".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let backend = app.state::<Backend>();
+        let _transition = lock(&backend.outline_transition)?;
+        let Some(current) = app.get_webview_window("capture-outline") else {
+            return Ok(());
+        };
+        if current.hwnd().map_err(|e| e.to_string())?.0
+            != window.hwnd().map_err(|e| e.to_string())?.0
+        {
+            return Ok(());
+        }
+        if backend.recording_transition.busy() || lock(&backend.recording)?.is_some() {
+            return Ok(());
+        }
+        backend.outline_ready.store(true, Ordering::SeqCst);
+        window.show().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
 #[tauri::command]
 async fn select_region(app: tauri::AppHandle) -> Result<(), String> {
     // WebView2 creation must not run in a synchronous IPC command on Windows:
     // https://github.com/tauri-apps/wry/issues/583
     tauri::async_runtime::spawn_blocking(move || {
+        hide_outline(&app)?;
         if let Some(window) = app.get_webview_window("region") {
             return window.set_focus().map_err(|e| e.to_string());
         }
@@ -532,6 +756,36 @@ fn close_region(window: tauri::WebviewWindow) -> Result<(), String> {
     }
     Ok(())
 }
+fn window_capture_input(target: &Target) -> Result<String, String> {
+    let identity = WindowCapture::from_target_id(&target.id)?;
+    let hwnd = identity.handle as HWND;
+    unsafe {
+        if IsWindow(hwnd) == 0 {
+            return Err(
+                "録画対象のウィンドウが閉じられています。録画対象を再選択してください".into(),
+            );
+        }
+        let mut process_id = 0;
+        GetWindowThreadProcessId(hwnd, &mut process_id);
+        if process_id != identity.process_id {
+            return Err(
+                "録画対象が別のウィンドウに変わりました。録画対象を再選択してください".into(),
+            );
+        }
+        if IsIconic(hwnd) != 0 {
+            return Err("録画対象が最小化されています。対象ウィンドウを元に戻してから開始・再開してください".into());
+        }
+        let mut rect = std::mem::zeroed();
+        if GetClientRect(hwnd, &mut rect) == 0 || rect.right <= rect.left || rect.bottom <= rect.top
+        {
+            return Err(
+                "録画対象の表示領域を取得できません。ウィンドウを表示してから再選択してください"
+                    .into(),
+            );
+        }
+    }
+    Ok(identity.ffmpeg_input())
+}
 fn start_segment(recording: &mut Recording) -> Result<(), String> {
     let path = recording
         .dir
@@ -550,8 +804,9 @@ fn start_segment(recording: &mut Recording) -> Result<(), String> {
         if recording.options.cursor { "1" } else { "0" },
     ]);
     if t.kind == "window" {
-        // Title is a separate argument, never shell interpolated. Reject ambiguous titles at start.
-        cmd.arg("-i").arg(format!("title={}", t.name));
+        // Titles can change when a document opens/closes (e.g. SOLIDWORKS).
+        // Use the enumerated HWND and validate its owning process at each segment.
+        cmd.arg("-i").arg(window_capture_input(t)?);
     } else {
         cmd.args([
             "-offset_x",
@@ -586,17 +841,115 @@ fn start_segment(recording: &mut Recording) -> Result<(), String> {
     ])
     .arg(&path)
     .stdin(Stdio::piped())
-    .stdout(Stdio::null())
+    .stdout(Stdio::piped())
     .stderr(log);
-    let child = cmd
+    cmd.args(["-progress", "pipe:1", "-stats_period", "0.1"]);
+    let audio = crate::audio::AudioRecording::start(
+        &recording.dir,
+        recording.segments.len(),
+        recording.options.microphone,
+        recording.options.system_audio,
+    )?;
+    let epoch = crate::audio::timestamp();
+    audio.epoch.store(epoch, Ordering::SeqCst);
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("録画を開始できません。FFmpegがPATHにあるか確認してください: {e}"))?;
+    recording.audio_epoch = epoch;
+    recording.first_video_epoch = Arc::new(AtomicU64::new(0));
+    let first = recording.first_video_epoch.clone();
+    if let Some(output) = child.stdout.take() {
+        recording.progress_reader = Some(std::thread::spawn(move || {
+            for line in BufReader::new(output).lines().map_while(Result::ok) {
+                if let Some(us) = line
+                    .strip_prefix("out_time_us=")
+                    .and_then(|s| s.parse::<u64>().ok())
+                {
+                    if first.load(Ordering::SeqCst) == 0 {
+                        first.store(
+                            crate::audio::timestamp().saturating_sub(us.saturating_mul(10)),
+                            Ordering::SeqCst,
+                        );
+                    }
+                }
+            }
+        }));
+    }
+    recording.audio = Some(audio);
     recording.child = Some(child);
     recording.segments.push(path);
     recording.started = Some(Instant::now());
+    if recording.options.highlight_clicks {
+        let target = recording.options.target.clone();
+        let w = target.width / 2 * 2;
+        let h = target.height / 2 * 2;
+        let path = recording
+            .dir
+            .join(format!("clicks-{}.ndjson", recording.segments.len() - 1));
+        let capture = crate::clicks::Recorder::start(
+            path.clone(),
+            recording.started.unwrap(),
+            recording.elapsed,
+            move || {
+                if target.kind == "window" {
+                    let identity = WindowCapture::from_target_id(&target.id).ok()?;
+                    let hwnd = identity.handle as HWND;
+                    let mut rect = unsafe { std::mem::zeroed() };
+                    let mut point = POINT { x: 0, y: 0 };
+                    if unsafe { GetClientRect(hwnd, &mut rect) } == 0
+                        || unsafe { ClientToScreen(hwnd, &mut point) } == 0
+                    {
+                        return None;
+                    }
+                    Some((
+                        point.x,
+                        point.y,
+                        rect.right - rect.left,
+                        rect.bottom - rect.top,
+                    ))
+                } else {
+                    Some((target.x, target.y, target.width, target.height))
+                }
+            },
+            w,
+            h,
+        );
+        let capture = match capture {
+            Ok(capture) => capture,
+            Err(error) => {
+                if let Some(mut child) = recording.child.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                recording.audio.take();
+                recording.started = None;
+                return Err(error);
+            }
+        };
+
+        recording.click_files.push(path);
+        recording.click_recorder = Some(capture);
+    }
+
     Ok(())
 }
 fn stop_segment(r: &mut Recording) -> Result<(), String> {
+    if r.child.is_none() {
+        return Ok(());
+    }
+
+    let prior_elapsed = r.elapsed;
+    let clicks_result = if let Some(mut clicks) = r.click_recorder.take() {
+        clicks.stop()
+    } else {
+        Ok(())
+    };
+    let audio_result = if let Some(mut audio) = r.audio.take() {
+        audio.stop()
+    } else {
+        Ok(())
+    };
+
     if let Some(start) = r.started.take() {
         r.elapsed += start.elapsed().as_secs_f64();
     }
@@ -625,6 +978,96 @@ fn stop_segment(r: &mut Recording) -> Result<(), String> {
             }
         }
     }
+    if let Some(reader) = r.progress_reader.take() {
+        let _ = reader.join();
+    }
+    clicks_result?;
+    audio_result?;
+    let start_delay = r
+        .first_video_epoch
+        .load(Ordering::SeqCst)
+        .saturating_sub(r.audio_epoch) as f64
+        / 10_000_000.0;
+    let start_delay = if r.first_video_epoch.load(Ordering::SeqCst) == 0 {
+        0.0
+    } else {
+        start_delay
+    };
+    if let Some(path) = r.click_files.last() {
+        let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let mut corrected = String::new();
+        for line in text.lines() {
+            let mut click: crate::clicks::Click =
+                serde_json::from_str(line).map_err(|e| e.to_string())?;
+            click.time -= start_delay;
+            if click.time >= prior_elapsed {
+                corrected.push_str(&serde_json::to_string(&click).map_err(|e| e.to_string())?);
+                corrected.push('\n');
+            }
+        }
+        fs::write(path, corrected).map_err(|e| e.to_string())?;
+    }
+
+    if let Some(path) = r.segments.last() {
+        r.elapsed = prior_elapsed + media::probe(path)?.duration;
+    }
+
+    if r.options.microphone || r.options.system_audio {
+        let index = r
+            .segments
+            .len()
+            .checked_sub(1)
+            .ok_or("録画セグメントがありません")?;
+        let source = &r.segments[index];
+        let seconds = media::probe(source)?.duration;
+        let mut cmd = media::tool("ffmpeg");
+        cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-n", "-i"])
+            .arg(source);
+        let mut inputs = 0;
+        for (enabled, label) in [
+            (r.options.microphone, "mic"),
+            (r.options.system_audio, "system"),
+        ] {
+            if enabled {
+                cmd.args(["-ss", &start_delay.to_string(), "-i"])
+                    .arg(r.dir.join(format!("segment-{index}-{label}.wav")));
+                inputs += 1;
+            }
+        }
+        let filter = if inputs == 2 {
+            "[1:a][2:a]amix=inputs=2:duration=longest:normalize=0,aresample=async=1:first_pts=0,apad[a]"
+        } else {
+            "[1:a]aresample=async=1:first_pts=0,apad[a]"
+        };
+        let output = r.dir.join(format!("segment-{index}-audio.mp4"));
+        let result = cmd
+            .args([
+                "-filter_complex",
+                filter,
+                "-map",
+                "0:v:0",
+                "-map",
+                "[a]",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-t",
+                &seconds.to_string(),
+            ])
+            .arg(&output)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !result.status.success() {
+            return Err(format!(
+                "音声の結合に失敗しました: {}",
+                String::from_utf8_lossy(&result.stderr)
+            ));
+        }
+        r.segments[index] = output;
+    }
     Ok(())
 }
 #[tauri::command]
@@ -632,6 +1075,7 @@ async fn start_recording(app: tauri::AppHandle, options: RecordOptions) -> Resul
     tauri::async_runtime::spawn_blocking(move || {
         let backend = app.state::<Backend>();
         let _transition = backend.recording_transition.enter()?;
+        hide_outline(&app)?;
         if lock(&backend.recording)?.is_some() {
             return Err("録画中です".into());
         }
@@ -647,27 +1091,19 @@ async fn start_recording(app: tauri::AppHandle, options: RecordOptions) -> Resul
         if trusted.width < 16 || trusted.height < 16 {
             return Err("録画対象が小さすぎます".into());
         }
-        if trusted.kind == "window"
-            && targets
-                .iter()
-                .filter(|v| v.kind == "window" && v.name == trusted.name)
-                .count()
-                > 1
-        {
-            return Err(
-                "同じタイトルのウィンドウが複数あります。モニターまたは領域録画を選んでください"
-                    .into(),
-            );
+        if trusted.kind == "window" {
+            window_capture_input(&trusted)?;
         }
         drop(targets);
-        let Some(folder) = rfd::FileDialog::new()
-            .set_title("録画の保存先フォルダー")
-            .pick_folder()
-        else {
-            return Ok(false);
+        let folder = match crate::recording_storage::load_folder(&recording_folder_settings(&app)?)?
+        {
+            Some(folder) => folder,
+            None => match choose_recording_directory(&app)? {
+                Some(folder) => folder,
+                None => return Ok(false),
+            },
         };
-        let dir = folder.join(format!("OVS-{}", uuid::Uuid::new_v4()));
-        fs::create_dir(&dir).map_err(|e| e.to_string())?;
+        let dir = crate::recording_storage::reserve_recording(&folder)?;
         let mut r = Recording {
             options: RecordOptions {
                 target: trusted,
@@ -678,6 +1114,12 @@ async fn start_recording(app: tauri::AppHandle, options: RecordOptions) -> Resul
             child: None,
             elapsed: 0.0,
             started: None,
+            audio: None,
+            audio_epoch: 0,
+            first_video_epoch: Arc::new(AtomicU64::new(0)),
+            progress_reader: None,
+            click_recorder: None,
+            click_files: vec![],
         };
         let toolbar = tauri::WebviewWindowBuilder::new(
             &app,
@@ -721,6 +1163,7 @@ async fn record_status(app: tauri::AppHandle) -> Result<RecordStatus, String> {
     let backend = app.state::<Backend>();
     let mut guard = lock(&backend.recording)?;
     if let Some(r) = guard.as_mut() {
+        if let Some(audio)=&r.audio {audio.health()?;}
         if let Some(child) = r.child.as_mut() {
             if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
                 return Err(format!("録画プロセスが終了しました（{status}）。停止して録画ファイルを確認してください。\n{}",media::log_tail(&r.dir.join("recording.log"))));
@@ -784,6 +1227,9 @@ async fn stop_recording(app: tauri::AppHandle) -> Result<Media, String> {
         let _ = app.emit_to("main", "recording-stopped", ());
         stopped?;
         let mut p = Project {
+            audio: vec![],
+            clicks: vec![],
+            annotations: vec![],
             version: 1,
             media: vec![],
             clips: vec![],
@@ -791,6 +1237,9 @@ async fn stop_recording(app: tauri::AppHandle) -> Result<Media, String> {
         for path in &r.segments {
             let m = media::probe(path)?;
             p.clips.push(media::Clip {
+                muted: false,
+                gain: None,
+                name: None,
                 id: uuid::Uuid::new_v4().to_string(),
                 media_id: m.id.clone(),
                 start: 0.0,
@@ -798,10 +1247,22 @@ async fn stop_recording(app: tauri::AppHandle) -> Result<Media, String> {
             });
             p.media.push(m);
         }
-        let path = r.dir.join("録画.mp4");
+        let name = r
+            .dir
+            .file_name()
+            .ok_or("録画名が不明です")?
+            .to_string_lossy();
+        let path = r.dir.join(format!("{name}.mp4"));
         // Stream-copy the matching native recording segments; avoid another lossy encode.
-        let list = (0..r.segments.len())
-            .map(|i| format!("file 'segment-{i}.mp4'\n"))
+        let list = r
+            .segments
+            .iter()
+            .map(|path| {
+                format!(
+                    "file '{}'\n",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                )
+            })
             .collect::<String>();
         fs::write(r.dir.join("segments.txt"), list).map_err(|e| e.to_string())?;
         let output = media::tool("ffmpeg")
@@ -829,7 +1290,31 @@ async fn stop_recording(app: tauri::AppHandle) -> Result<Media, String> {
             ));
         }
         let m = approve(&app, &backend, &path)?;
-        app.emit_to("main", "recording-finished", &m)
+        #[derive(Serialize, Clone)]
+        struct Finished<'a> {
+            #[serde(flatten)]
+            media: &'a Media,
+            clicks: Vec<crate::clicks::Click>,
+        }
+        let mut clicks = Vec::new();
+        for file in &r.click_files {
+            let text = fs::read_to_string(file).map_err(|e| e.to_string())?;
+            for line in text.lines() {
+                if clicks.len() >= 10000 {
+                    return Err(
+                        "クリック記録が10000件を超えました。録画動画と記録は保存先に残っています"
+                            .into(),
+                    );
+                }
+                let mut click: crate::clicks::Click =
+                    serde_json::from_str(line).map_err(|e| e.to_string())?;
+                if click.time < m.duration {
+                    click.media_id = m.id.clone();
+                    clicks.push(click);
+                }
+            }
+        }
+        app.emit_to("main", "recording-finished", Finished { media: &m, clicks })
             .map_err(|e| e.to_string())?;
         Ok(m)
     })
@@ -854,6 +1339,11 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
+                if let Some(outline) = window.app_handle().get_webview_window("capture-outline") {
+                    let _ = outline.destroy();
+                }
+            }
             if window.label() == "recording" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     let backend = window.state::<Backend>();
@@ -922,6 +1412,11 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            show_capture_outline,
+            hide_capture_outline,
+            capture_outline_ready,
+            recording_folder,
+            choose_recording_folder,
             recording_tools,
             choose_ffmpeg_folder,
             import_videos,
