@@ -173,3 +173,15 @@ fn rejects_playlists_disguised_as_video_files() {
     .unwrap();
     assert!(media::probe(&path).unwrap_err().contains("whitelist"));
 }
+
+#[test]
+fn verifies_installed_encoder_and_probe_before_recording() {
+    assert!(media::check_tools(false).is_ok());
+}
+#[test]
+fn rejects_incomplete_ffmpeg_folder_without_changing_configuration() {
+    let folder = tempfile::tempdir().unwrap();
+    let before = media::configured_tool_directory();
+    assert!(media::set_tool_directory(Some(folder.path().to_owned())).is_err());
+    assert_eq!(media::configured_tool_directory(), before);
+}

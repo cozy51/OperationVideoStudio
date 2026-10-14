@@ -1,4 +1,5 @@
 use crate::media::{self, Media, Project};
+use crate::recording_gate::RecordingGate;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
@@ -53,6 +54,7 @@ struct Recording {
 struct Backend {
     allowed: Mutex<HashSet<PathBuf>>,
     recording: Mutex<Option<Recording>>,
+    recording_transition: RecordingGate,
     export: Mutex<Option<Arc<AtomicBool>>>,
     last_output: Mutex<Option<PathBuf>>,
     targets: Mutex<Vec<Target>>,
@@ -96,6 +98,76 @@ fn check_project(backend: &Backend, p: &Project) -> Result<(), String> {
         }
     }
     Ok(())
+}
+#[derive(Serialize)]
+struct ToolStatus {
+    ready: bool,
+    details: String,
+    directory: Option<String>,
+}
+fn tools_status() -> ToolStatus {
+    let result = media::check_tools(true);
+    ToolStatus {
+        ready: result.is_ok(),
+        details: result.unwrap_or_else(|e| e),
+        directory: media::configured_tool_directory().map(|p| p.to_string_lossy().into_owned()),
+    }
+}
+#[tauri::command]
+async fn recording_tools() -> Result<ToolStatus, String> {
+    tauri::async_runtime::spawn_blocking(tools_status)
+        .await
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn choose_ffmpeg_folder(app: tauri::AppHandle) -> Result<Option<ToolStatus>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let backend = app.state::<Backend>();
+        if backend.recording_transition.busy()
+            || lock(&backend.recording)?.is_some()
+            || lock(&backend.export)?.is_some()
+        {
+            return Err("録画・書き出し中はFFmpeg設定を変更できません".into());
+        }
+        let Some(mut directory) = rfd::FileDialog::new()
+            .set_title("ffmpeg.exe と ffprobe.exe のあるフォルダー（bin）")
+            .pick_folder()
+        else {
+            return Ok(None);
+        };
+        if !directory.join("ffmpeg.exe").is_file() && directory.join("bin/ffmpeg.exe").is_file() {
+            directory = directory.join("bin");
+        }
+        let old = media::configured_tool_directory();
+        media::set_tool_directory(Some(directory))?;
+        if let Err(error) = media::check_tools(true) {
+            let _ = media::set_tool_directory(old);
+            return Err(error);
+        }
+        let saved = (|| -> Result<(), String> {
+            let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+            fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            let mut temporary = tempfile::NamedTempFile::new_in(&dir).map_err(|e| e.to_string())?;
+            temporary
+                .write_all(
+                    &serde_json::to_vec(&media::configured_tool_directory())
+                        .map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+            temporary.as_file().sync_all().map_err(|e| e.to_string())?;
+            temporary
+                .persist(dir.join("ffmpeg-directory.json"))
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        })();
+        if let Err(error) = saved {
+            let _ = media::set_tool_directory(old);
+            return Err(error);
+        }
+        Ok(Some(tools_status()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 async fn import_videos(app: tauri::AppHandle) -> Result<Vec<Media>, String> {
@@ -541,10 +613,11 @@ fn stop_segment(r: &mut Recording) -> Result<(), String> {
 async fn start_recording(app: tauri::AppHandle, options: RecordOptions) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let backend = app.state::<Backend>();
-        let mut active = lock(&backend.recording)?;
-        if active.is_some() {
+        let _transition = backend.recording_transition.enter()?;
+        if lock(&backend.recording)?.is_some() {
             return Err("録画中です".into());
         }
+        media::check_tools(true)?;
         let t = &options.target;
         let targets = lock(&backend.targets)?;
         let trusted = if t.kind == "region" {
@@ -600,7 +673,7 @@ async fn start_recording(app: tauri::AppHandle, options: RecordOptions) -> Resul
         .build()
         .map_err(|e| e.to_string())?;
         if let Err(e) = exclude(&toolbar) {
-            let _ = toolbar.close();
+            let _ = toolbar.destroy();
             return Err(e);
         }
         // The countdown is after destination selection and before the native capture process.
@@ -612,20 +685,22 @@ async fn start_recording(app: tauri::AppHandle, options: RecordOptions) -> Resul
             let _ = main.minimize();
         }
         if let Err(e) = start_segment(&mut r) {
-            let _ = toolbar.close();
+            let _ = toolbar.destroy();
             if let Some(main) = app.get_webview_window("main") {
                 let _ = main.unminimize();
             }
             return Err(e);
         }
-        *active = Some(r);
+        *lock(&backend.recording)? = Some(r);
         Ok(true)
     })
     .await
     .map_err(|e| e.to_string())?
 }
 #[tauri::command]
-fn record_status(backend: State<Backend>) -> Result<RecordStatus, String> {
+async fn record_status(app: tauri::AppHandle) -> Result<RecordStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+    let backend = app.state::<Backend>();
     let mut guard = lock(&backend.recording)?;
     if let Some(r) = guard.as_mut() {
         if let Some(child) = r.child.as_mut() {
@@ -645,11 +720,13 @@ fn record_status(backend: State<Backend>) -> Result<RecordStatus, String> {
             seconds: 0.0,
         })
     }
+    }).await.map_err(|e|e.to_string())?
 }
 #[tauri::command]
 async fn pause_recording(app: tauri::AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let backend = app.state::<Backend>();
+        let _transition = backend.recording_transition.enter()?;
         let mut active = lock(&backend.recording)?;
         stop_segment(active.as_mut().ok_or("録画していません")?)
     })
@@ -657,23 +734,30 @@ async fn pause_recording(app: tauri::AppHandle) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 #[tauri::command]
-fn resume_recording(backend: State<Backend>) -> Result<(), String> {
-    let mut active = lock(&backend.recording)?;
-    let r = active.as_mut().ok_or("録画していません")?;
-    if r.child.is_none() {
-        start_segment(r)?;
-    }
-    Ok(())
+async fn resume_recording(app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let backend = app.state::<Backend>();
+        let _transition = backend.recording_transition.enter()?;
+        let mut active = lock(&backend.recording)?;
+        let r = active.as_mut().ok_or("録画していません")?;
+        if r.child.is_none() {
+            start_segment(r)?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 async fn stop_recording(app: tauri::AppHandle) -> Result<Media, String> {
     let notify = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let backend = app.state::<Backend>();
+        let _transition = backend.recording_transition.enter()?;
         let mut r = lock(&backend.recording)?.take().ok_or("録画していません")?;
         let stopped = stop_segment(&mut r);
         if let Some(toolbar) = app.get_webview_window("recording") {
-            let _ = toolbar.close();
+            let _ = toolbar.destroy();
         }
         if let Some(main) = app.get_webview_window("main") {
             let _ = main.unminimize();
@@ -741,13 +825,28 @@ async fn stop_recording(app: tauri::AppHandle) -> Result<Media, String> {
 pub fn run() {
     tauri::Builder::default()
         .manage(Backend::default())
+        .setup(|app| {
+            if let Ok(dir) = app.path().app_local_data_dir() {
+                if let Ok(bytes) = fs::read(dir.join("ffmpeg-directory.json")) {
+                    if let Ok(directory) = serde_json::from_slice::<Option<PathBuf>>(&bytes) {
+                        let _ = media::set_tool_directory(directory);
+                    }
+                }
+            }
+            Ok(())
+        })
         .on_window_event(|window, event| {
             if window.label() == "recording" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    if let Ok(active) = window.state::<Backend>().recording.lock() {
-                        if active.is_some() {
-                            api.prevent_close();
-                        }
+                    let backend = window.state::<Backend>();
+                    if backend.recording_transition.busy()
+                        || backend
+                            .recording
+                            .try_lock()
+                            .map(|g| g.is_some())
+                            .unwrap_or(true)
+                    {
+                        api.prevent_close();
                     }
                 }
             }
@@ -756,11 +855,15 @@ pub fn run() {
                     let backend = window.state::<Backend>();
                     let recording = backend
                         .recording
-                        .lock()
+                        .try_lock()
                         .map(|g| g.is_some())
                         .unwrap_or(true);
-                    let exporting = backend.export.lock().map(|g| g.is_some()).unwrap_or(true);
-                    if recording || exporting {
+                    let exporting = backend
+                        .export
+                        .try_lock()
+                        .map(|g| g.is_some())
+                        .unwrap_or(true);
+                    if recording || exporting || backend.recording_transition.busy() {
                         api.prevent_close();
                         let _ = window.emit(
                             "backend-error",
@@ -801,6 +904,8 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            recording_tools,
+            choose_ffmpeg_folder,
             import_videos,
             save_project,
             open_project,

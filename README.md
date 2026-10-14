@@ -28,7 +28,7 @@ npm run tauri dev
 npm run tauri build
 ```
 
-Node.js 22 以上、Rust stable (MSVC)、Visual Studio C++ Build Tools、WebView2、FFmpeg / FFprobe が必要です。FFmpeg は PATH から起動し、アプリには同梱していません。インストーラー利用者の PC にも FFmpeg と WebView2 が必要です。CI は Windows でテスト・ビルドし exe/msi をアーティファクトに保存します。未署名の開発用インストーラーです。
+Node.js 22 以上、Rust stable (MSVC)、Visual Studio C++ Build Tools、WebView2、FFmpeg / FFprobe が必要です。FFmpeg は PATH または録画画面で選択したフォルダーから起動し、アプリには同梱していません。インストーラー利用者の PC にも FFmpeg と WebView2 が必要です。`program not found` と表示される場合は [FFmpeg設定手順](docs/windows.md#program-not-foundで録画できない場合) を参照してください。CI は Windows でテスト・ビルドし exe/msi をアーティファクトに保存します。未署名の開発用インストーラーです。
 
 ## Linux クラウドで検証できる範囲
 
@@ -45,7 +45,7 @@ Rust の動画処理テストには `ffmpeg` と `ffprobe` が PATH に必要で
 ## 構成
 
 - `src/editor.ts`: 元動画の参照と source in/out を持つ非破壊タイムライン
-- `src/main.tsx`, `src/style.css`: React / TypeScript / Tailwind の日本語編集画面
+- `src/App.tsx`, `src/main.tsx`, `src/style.css`: React / TypeScript / Tailwind の日本語編集画面
 - `src-tauri/src/media.rs`: FFprobe、正規化・連結・キャンセル・上書き禁止
 - `src-tauri/src/desktop.rs`: Windows キャプチャ対象列挙、録画、ネイティブダイアログ、Tauri コマンド
 - `src-tauri/tests/video_pipeline.rs`: 実際の FFmpeg で異なる解像度/fps/音声の素材を編集するテスト

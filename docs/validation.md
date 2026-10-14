@@ -19,3 +19,15 @@
 クラウドの `install_script` と `start_skill` を設定ドラフトに保存済み。インストールスクリプトは実際に再実行して検証した。保存は公開操作とは別であり、新規タスクへのスナップショット復元試験は未実施。
 
 実機で確認する項目は [Windows試験票](windows.md) に記載。
+
+## v0.1.1 録画開始の修正
+
+ユーザー提供画像の「FFmpegがPATHにあるか確認してください: program not found」から、FFmpeg未検出による開始失敗を確認した。Windows版UIが起動している画像は提供されたが、こちらでWindows実機試験を実施したわけではない。
+
+- FFmpeg/FFprobe・gdigrab・libx264/AACをカウントダウン前に検査。
+- ネイティブダイアログで選んだFFmpegフォルダーをローカル設定に保存。PATH依存を回避。
+- モーダル内でエラーを表示し、開始失敗時にカウントダウンを解除。
+- 状態mutexを保持したままUIウィンドウ操作を呼ぶ処理を削除。状態読み取りはworkerに移し、UIイベント側はtry_lock。開始/停止の同時要求はatomic gateで拒否。
+- ツールバーの状態ポーリングを直列化し、遅延時に要求を積み上げない。
+
+検証: フロントエンド9テスト（編集6・録画準備UI3）、Rust 8テスト（transition 2・FFmpeg integration 6）、TypeScript/Vite build、Windows GNU targetの型チェックに成功。UIテストはモックしたTauriコマンドを使うjsdom試験であり、Windowsの録画結果を証明するものではない。Windows実機での録画・停止・MP4再生は引き続き必要。

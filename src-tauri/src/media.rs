@@ -2,11 +2,11 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::{BufRead, BufReader, Read},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex, OnceLock,
     },
     thread,
     time::Duration,
@@ -38,16 +38,110 @@ pub struct Project {
     pub clips: Vec<Clip>,
 }
 
+static TOOL_DIRECTORY: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+fn tool_directory() -> &'static Mutex<Option<PathBuf>> {
+    TOOL_DIRECTORY.get_or_init(|| Mutex::new(None))
+}
+pub fn configured_tool_directory() -> Option<PathBuf> {
+    tool_directory().lock().ok().and_then(|p| p.clone())
+}
+fn tool_filename(name: &str) -> String {
+    if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.into()
+    }
+}
+pub fn set_tool_directory(directory: Option<PathBuf>) -> Result<(), String> {
+    let directory = directory
+        .map(|p| fs::canonicalize(p).map_err(|e| format!("FFmpegフォルダーを開けません: {e}")))
+        .transpose()?;
+    if let Some(path) = &directory {
+        if !path.is_dir()
+            || !["ffmpeg", "ffprobe"]
+                .iter()
+                .all(|name| path.join(tool_filename(name)).is_file())
+        {
+            return Err(
+                "ffmpeg.exe と ffprobe.exe の両方があるフォルダー（通常は bin）を選択してください"
+                    .into(),
+            );
+        }
+    }
+    *tool_directory()
+        .lock()
+        .map_err(|_| "FFmpeg設定を変更できません")? = directory;
+    Ok(())
+}
 pub fn tool(name: &str) -> Command {
+    let executable = if matches!(name, "ffmpeg" | "ffprobe") {
+        configured_tool_directory()
+            .map(|p| p.join(tool_filename(name)))
+            .unwrap_or_else(|| PathBuf::from(name))
+    } else {
+        PathBuf::from(name)
+    };
     #[allow(unused_mut)]
-    let mut cmd = Command::new(name);
+    let mut cmd = Command::new(executable);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        cmd.creation_flags(0x08000000);
     }
     cmd
 }
+pub fn check_tools(require_capture: bool) -> Result<String, String> {
+    let version=tool("ffmpeg").arg("-version").output().map_err(|e|format!("FFmpegが見つかりません。「FFmpegのフォルダーを設定」で ffmpeg.exe と ffprobe.exe のある bin フォルダーを選択してください。PATHに導入した場合はアプリを再起動してください。\n{e}"))?;
+    let probe = tool("ffprobe").arg("-version").output().map_err(|e| {
+        format!("FFprobeが見つかりません。ffmpeg.exe と ffprobe.exe の両方が必要です。\n{e}")
+    })?;
+    if !version.status.success() || !probe.status.success() {
+        return Err("FFmpegまたはFFprobeを正常に実行できません。信頼する配布元のWindowsビルドを選択してください".into());
+    }
+    let encoders = tool("ffmpeg")
+        .args(["-hide_banner", "-encoders"])
+        .output()
+        .map_err(|e| e.to_string())?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&encoders.stdout),
+        String::from_utf8_lossy(&encoders.stderr)
+    );
+    if !encoders.status.success()
+        || !text
+            .lines()
+            .any(|line| line.split_whitespace().any(|word| word == "libx264"))
+        || !text
+            .lines()
+            .any(|line| line.split_whitespace().any(|word| word == "aac"))
+    {
+        return Err("このFFmpegは必要なH.264 (libx264) / AACエンコーダーに対応していません".into());
+    }
+    if require_capture {
+        let devices = tool("ffmpeg")
+            .args(["-hide_banner", "-devices"])
+            .output()
+            .map_err(|e| e.to_string())?;
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&devices.stdout),
+            String::from_utf8_lossy(&devices.stderr)
+        );
+        if !devices.status.success()
+            || !text
+                .lines()
+                .any(|line| line.split_whitespace().any(|word| word == "gdigrab"))
+        {
+            return Err("このFFmpegはWindows録画 (gdigrab) に対応していません。Windows用ビルドを設定してください".into());
+        }
+    }
+    Ok(String::from_utf8_lossy(&version.stdout)
+        .lines()
+        .next()
+        .unwrap_or("FFmpeg / FFprobe 使用可能")
+        .to_string())
+}
+
 pub fn probe(path: &Path) -> Result<Media, String> {
     let path = fs::canonicalize(path).map_err(|e| format!("動画を開けません: {e}"))?;
     let output = tool("ffprobe")

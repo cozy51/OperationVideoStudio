@@ -641,3 +641,41 @@ progress {
     max-height: 250px;
   }
 }
+.recording-modal {
+  max-height: 92vh;
+  overflow-y: auto;
+}
+.modal-error {
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 12px;
+}
+.tool-status {
+  border: 1px solid #d9e5f5;
+  border-radius: 7px;
+  padding: 12px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tool-status.missing {
+  background: #fff8ec;
+  color: #925d19;
+}
+.tool-status.ready {
+  background: #eef8f2;
+  color: #337252;
+}
+.tool-status small {
+  display: block;
+  margin-top: 6px;
+}
+.tool-status button {
+  display: block;
+  margin-top: 10px;
+  font-size: 12px;
+}
+.tool-status p {
+  margin-top: 8px;
+  font-size: 12px;
+}
