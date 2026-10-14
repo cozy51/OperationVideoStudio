@@ -132,6 +132,10 @@ main {
   background: white;
   padding: 20px;
   overflow: auto;
+  /* Side panels scroll inside the row instead of making the preview row
+     as tall as their content (e.g. long annotation settings). */
+  height: 0;
+  min-height: 100%;
 }
 .library {
   border-right: 1px solid #e0e7f1;
