@@ -1254,13 +1254,15 @@ async fn stop_recording(app: tauri::AppHandle) -> Result<Media, String> {
             .to_string_lossy();
         let path = r.dir.join(format!("{name}.mp4"));
         // Stream-copy the matching native recording segments; avoid another lossy encode.
+        // Use absolute paths: FFmpeg cannot resolve relative entries against a
+        // verbatim (\\?\) list path and turns them into "\\segment-0.mp4".
         let list = r
             .segments
             .iter()
             .map(|path| {
                 format!(
                     "file '{}'\n",
-                    path.file_name().unwrap_or_default().to_string_lossy()
+                    path.to_string_lossy().replace('\'', "'\\''")
                 )
             })
             .collect::<String>();
@@ -1275,7 +1277,7 @@ async fn stop_recording(app: tauri::AppHandle) -> Result<Media, String> {
                 "-f",
                 "concat",
                 "-safe",
-                "1",
+                "0",
                 "-i",
             ])
             .arg(r.dir.join("segments.txt"))
