@@ -717,7 +717,8 @@ progress {
   color: #71839b;
   margin-top: 7px;
 }
-.properties input[type="text"] {
+.properties input[type="text"],
+.properties textarea {
   display: block;
   width: 100%;
   margin-top: 7px;
@@ -904,4 +905,8 @@ progress {
 }
 .annotation-drag-label {
   pointer-events: none;
+}
+.properties textarea {
+  resize: vertical;
+  font: inherit;
 }

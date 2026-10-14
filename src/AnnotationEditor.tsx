@@ -9,6 +9,19 @@ import {
   type ClickInfo,
   type Annotation,
 } from "./annotations";
+// Moves keyboard focus to the text field of the selected annotation's settings.
+export function focusAnnotationText() {
+  requestAnimationFrame(() => {
+    const field = document.getElementById("annotation-text") as
+      | HTMLInputElement
+      | HTMLTextAreaElement
+      | null;
+    if (!field) return;
+    field.scrollIntoView({ block: "nearest" });
+    field.focus();
+    field.select();
+  });
+}
 export function AnnotationTools({
   time,
   total,
@@ -33,7 +46,7 @@ export function AnnotationTools({
         </button>
       ))}
       <p className="hint">
-        現在の時刻に追加し、プレビュー上でドラッグして配置できます。
+        現在の時刻に追加し、プレビュー上でドラッグして配置できます。文字はダブルクリックで編集できます。
       </p>
     </div>
   );
@@ -99,11 +112,23 @@ export function AnnotationProperties({
         <>
           <label>
             文字
-            <input
-              maxLength={1000}
-              value={item.text}
-              onChange={(e) => change({ ...item, text: e.target.value })}
-            />
+            {item.kind === "text" ? (
+              <textarea
+                id="annotation-text"
+                rows={3}
+                maxLength={1000}
+                value={item.text}
+                onChange={(e) => change({ ...item, text: e.target.value })}
+              />
+            ) : (
+              <input
+                id="annotation-text"
+                type="text"
+                maxLength={1000}
+                value={item.text}
+                onChange={(e) => change({ ...item, text: e.target.value })}
+              />
+            )}
           </label>
           {number("fontSize", 8, 160, 1)}
           <label>
@@ -232,6 +257,10 @@ export function OverlayPreview({
             select(a.id);
             drag.current = { a, x: e.clientX, y: e.clientY };
           }}
+          onDoubleClick={() => {
+            select(a.id);
+            if (a.kind === "text" || a.kind === "marker") focusAnnotationText();
+          }}
           onPointerMove={(e) => {
             const d = drag.current;
             if (!d) return;
@@ -252,6 +281,7 @@ export function OverlayPreview({
             const d = drag.current;
             drag.current = null;
             setDraft(null);
+            if (e.clientX === d.x && e.clientY === d.y) return;
             const bounds =
               e.currentTarget.parentElement!.getBoundingClientRect();
             change({
@@ -363,6 +393,16 @@ export function AnnotationTrack({
           <div
             key={a.id}
             className="annotation-bar"
+            title={
+              a.kind === "text" || a.kind === "marker"
+                ? "ダブルクリックで文字を編集"
+                : undefined
+            }
+            onDoubleClick={() => {
+              select(a.id);
+              if (a.kind === "text" || a.kind === "marker")
+                focusAnnotationText();
+            }}
             style={{
               top: 5 + index * 38,
               left: `${(a.start / total) * 100}%`,
@@ -404,7 +444,8 @@ export function AnnotationTrack({
             onPointerUp={(e) => {
               const d = drag.current;
               drag.current = null;
-              if (!d) return;
+              // A plain click (or double-click) must not add an undo step.
+              if (!d || e.clientX === d.x) return;
               const delta = ((e.clientX - d.x) / d.width) * total;
               let start = d.a.start,
                 end = d.a.end;
