@@ -31,3 +31,11 @@
 - ツールバーの状態ポーリングを直列化し、遅延時に要求を積み上げない。
 
 検証: フロントエンド9テスト（編集6・録画準備UI3）、Rust 8テスト（transition 2・FFmpeg integration 6）、TypeScript/Vite build、Windows GNU targetの型チェックに成功。UIテストはモックしたTauriコマンドを使うjsdom試験であり、Windowsの録画結果を証明するものではない。Windows実機での録画・停止・MP4再生は引き続き必要。
+
+## v0.1.2 領域選択フリーズの修正
+
+領域選択が白いウィンドウのまま「応答なし」になる画像をユーザーから受領。同期Tauriコマンド内でWebView2ウィンドウを作成していたことを確認した。Tauri `WebviewWindowBuilder` のAPI説明が警告するWindowsのデッドロック条件（https://github.com/tauri-apps/wry/issues/583）に該当する。
+
+`select_region` を async コマンド + `spawn_blocking` に変更し、UIスレッドからウィンドウ作成を切り離した。作成中は非表示とし、位置・サイズ・録画除外の設定後に表示/フォーカスする。設定失敗時には残ったウィンドウを破棄する。画面側では作成中の再クリックを禁止し、失敗時にはモーダル内にエラーを表示して再試行可能にした。
+
+TypeScript/Vite build、フロントエンド10テスト（編集6・録画UI4）、Windows GNU targetの型チェックに成功。追加UIテストは、領域選択要求の処理中に二重実行しないことと、エラー後の復帰を検証する。Windowsで領域選択の描画・ドラッグ・Esc・再選択を実行する実機試験は未実施。

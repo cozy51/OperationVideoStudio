@@ -117,7 +117,8 @@ export function RegionPicker() {
   const [error, setError] = useState("");
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") void invoke("close_region");
+      if (e.key === "Escape")
+        void invoke("close_region").catch((e) => setError(message(e)));
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
@@ -900,7 +901,7 @@ export function App() {
             ? "処理中…"
             : recording
               ? "録画中 — ツールバーから停止してください"
-              : "v0.1.1 • 基本編集"}
+              : "v0.1.2 • 基本編集"}
         </span>
       </footer>
       {exporting && (
@@ -989,9 +990,7 @@ export function App() {
             </label>
             <button
               disabled={busy}
-              onClick={() =>
-                void invoke("select_region").catch((e) => setError(message(e)))
-              }
+              onClick={() => void task(() => invoke("select_region"))}
             >
               マウスで範囲を選択
             </button>

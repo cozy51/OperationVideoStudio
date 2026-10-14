@@ -1,6 +1,6 @@
 [package]
 name = "operation-video-studio"
-version = "0.1.1"
+version = "0.1.2"
 description = "Local Windows recording and non-destructive video editor"
 authors = ["Operation Video Studio contributors"]
 edition = "2021"

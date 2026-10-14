@@ -430,38 +430,56 @@ fn exclude(window: &tauri::WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 #[tauri::command]
-fn select_region(app: tauri::AppHandle) -> Result<(), String> {
-    if app.get_webview_window("region").is_some() {
-        return Ok(());
-    }
-    let (x, y, w, h) = unsafe {
-        (
-            GetSystemMetrics(SM_XVIRTUALSCREEN),
-            GetSystemMetrics(SM_YVIRTUALSCREEN),
-            GetSystemMetrics(SM_CXVIRTUALSCREEN),
-            GetSystemMetrics(SM_CYVIRTUALSCREEN),
+async fn select_region(app: tauri::AppHandle) -> Result<(), String> {
+    // WebView2 creation must not run in a synchronous IPC command on Windows:
+    // https://github.com/tauri-apps/wry/issues/583
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(window) = app.get_webview_window("region") {
+            return window.set_focus().map_err(|e| e.to_string());
+        }
+        let (x, y, w, h) = unsafe {
+            (
+                GetSystemMetrics(SM_XVIRTUALSCREEN),
+                GetSystemMetrics(SM_YVIRTUALSCREEN),
+                GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                GetSystemMetrics(SM_CYVIRTUALSCREEN),
+            )
+        };
+        if w <= 0 || h <= 0 {
+            return Err("デスクトップの領域を取得できません".into());
+        }
+        let window = tauri::WebviewWindowBuilder::new(
+            &app,
+            "region",
+            tauri::WebviewUrl::App(format!("index.html#region?x={x}&y={y}").into()),
         )
-    };
-    let window = tauri::WebviewWindowBuilder::new(
-        &app,
-        "region",
-        tauri::WebviewUrl::App(format!("index.html#region?x={x}&y={y}").into()),
-    )
-    .title("Operation Video Studio 領域選択")
-    .decorations(false)
-    .transparent(true)
-    .always_on_top(true)
-    .resizable(false)
-    .build()
-    .map_err(|e| e.to_string())?;
-    window
-        .set_position(tauri::PhysicalPosition::new(x, y))
+        .title("Operation Video Studio 領域選択")
+        .visible(false)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .resizable(false)
+        .build()
         .map_err(|e| e.to_string())?;
-    window
-        .set_size(tauri::PhysicalSize::new(w as u32, h as u32))
-        .map_err(|e| e.to_string())?;
-    exclude(&window)?;
-    Ok(())
+        let result = (|| -> Result<(), String> {
+            window
+                .set_position(tauri::PhysicalPosition::new(x, y))
+                .map_err(|e| e.to_string())?;
+            window
+                .set_size(tauri::PhysicalSize::new(w as u32, h as u32))
+                .map_err(|e| e.to_string())?;
+            exclude(&window)?;
+            window.show().map_err(|e| e.to_string())?;
+            window.set_focus().map_err(|e| e.to_string())?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = window.destroy();
+        }
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 fn complete_region(
