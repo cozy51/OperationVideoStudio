@@ -767,6 +767,7 @@ progress {
   pointer-events: auto;
   cursor: move;
   touch-action: none;
+  user-select: none;
 }
 .annotation-hit.selected {
   outline: 2px dashed #559eff;
@@ -859,7 +860,7 @@ progress {
   min-height: 70px;
 }
 .annotation-hit.selected:after {
-  content: "ドラッグで移動";
+  content: "ドラッグで移動・□でサイズ変更";
   position: absolute;
   left: 0;
   top: -22px;
@@ -913,4 +914,52 @@ progress {
 .properties textarea {
   resize: vertical;
   font: inherit;
+}
+.resize-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  margin: -5px;
+  background: white;
+  border: 2px solid #2469dc;
+  border-radius: 2px;
+  z-index: 1;
+}
+.resize-handle.n,
+.resize-handle.s {
+  left: 50%;
+  cursor: ns-resize;
+}
+.resize-handle.e,
+.resize-handle.w {
+  top: 50%;
+  cursor: ew-resize;
+}
+.resize-handle.n,
+.resize-handle.ne,
+.resize-handle.nw {
+  top: 0;
+}
+.resize-handle.s,
+.resize-handle.se,
+.resize-handle.sw {
+  top: 100%;
+}
+.resize-handle.w,
+.resize-handle.nw,
+.resize-handle.sw {
+  left: 0;
+}
+.resize-handle.e,
+.resize-handle.ne,
+.resize-handle.se {
+  left: 100%;
+}
+.resize-handle.ne,
+.resize-handle.sw {
+  cursor: nesw-resize;
+}
+.resize-handle.nw,
+.resize-handle.se {
+  cursor: nwse-resize;
 }

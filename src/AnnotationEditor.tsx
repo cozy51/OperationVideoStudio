@@ -201,7 +201,22 @@ export function OverlayPreview({
   const canvas = useRef<HTMLCanvasElement>(null);
   const [draft, setDraft] = useState<Annotation | null>(null);
   const visibleItems = items.map((a) => (draft?.id === a.id ? draft : a));
-  const drag = useRef<{ a: Annotation; x: number; y: number } | null>(null);
+  const drag = useRef<{
+    a: Annotation;
+    x: number;
+    y: number;
+    handle: string;
+  } | null>(null);
+  const dragged = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = drag.current!;
+    const bounds = e.currentTarget.parentElement!.getBoundingClientRect();
+    return resizeAnnotation(
+      d.a,
+      d.handle,
+      (e.clientX - d.x) / bounds.width,
+      (e.clientY - d.y) / bounds.height,
+    );
+  };
   useEffect(() => {
     const ctx = canvas.current?.getContext("2d");
     if (!ctx) return;
@@ -253,48 +268,33 @@ export function OverlayPreview({
           }}
           onPointerDown={(e) => {
             e.stopPropagation();
+            // Keep the browser from starting a text-selection drag, which
+            // cancels the pointer and drops the move/resize.
+            e.preventDefault();
             e.currentTarget.setPointerCapture(e.pointerId);
             select(a.id);
-            drag.current = { a, x: e.clientX, y: e.clientY };
+            drag.current = {
+              a,
+              x: e.clientX,
+              y: e.clientY,
+              handle: (e.target as HTMLElement).dataset.handle ?? "",
+            };
           }}
           onDoubleClick={() => {
             select(a.id);
             if (a.kind === "text" || a.kind === "marker") focusAnnotationText();
           }}
           onPointerMove={(e) => {
-            const d = drag.current;
-            if (!d) return;
-            const bounds =
-              e.currentTarget.parentElement!.getBoundingClientRect();
-            const x = Math.min(
-                1 - a.width,
-                Math.max(0, d.a.x + (e.clientX - d.x) / bounds.width),
-              ),
-              y = Math.min(
-                1 - a.height,
-                Math.max(0, d.a.y + (e.clientY - d.y) / bounds.height),
-              );
-            setDraft({ ...d.a, x, y });
+            if (drag.current) setDraft(dragged(e));
           }}
           onPointerUp={(e) => {
-            if (!drag.current) return;
             const d = drag.current;
+            if (!d) return;
+            const moved = e.clientX !== d.x || e.clientY !== d.y;
+            const next = dragged(e);
             drag.current = null;
             setDraft(null);
-            if (e.clientX === d.x && e.clientY === d.y) return;
-            const bounds =
-              e.currentTarget.parentElement!.getBoundingClientRect();
-            change({
-              ...d.a,
-              x: Math.min(
-                1 - d.a.width,
-                Math.max(0, d.a.x + (e.clientX - d.x) / bounds.width),
-              ),
-              y: Math.min(
-                1 - d.a.height,
-                Math.max(0, d.a.y + (e.clientY - d.y) / bounds.height),
-              ),
-            });
+            if (moved) change(next);
           }}
           onPointerCancel={() => {
             drag.current = null;
@@ -302,10 +302,49 @@ export function OverlayPreview({
           }}
         >
           <span className="annotation-drag-label" />
+          {selected === a.id &&
+            resizeHandles.map((handle) => (
+              <span
+                key={handle}
+                data-handle={handle}
+                className={`resize-handle ${handle}`}
+                aria-label="サイズ変更"
+              />
+            ))}
         </div>
       ))}
     </div>
   );
+}
+const resizeHandles = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
+// Moves (handle "") or resizes an annotation by the given drag delta,
+// expressed as a fraction of the preview, keeping it inside the frame.
+export function resizeAnnotation(
+  a: Annotation,
+  handle: string,
+  dx: number,
+  dy: number,
+): Annotation {
+  const min = 0.01;
+  let { x, y, width, height } = a;
+  if (!handle) {
+    x = Math.min(1 - width, Math.max(0, x + dx));
+    y = Math.min(1 - height, Math.max(0, y + dy));
+  }
+  if (handle.includes("w")) {
+    const left = Math.min(x + width - min, Math.max(0, x + dx));
+    width += x - left;
+    x = left;
+  }
+  if (handle.includes("e")) width = Math.min(1 - x, Math.max(min, width + dx));
+  if (handle.includes("n")) {
+    const top = Math.min(y + height - min, Math.max(0, y + dy));
+    height += y - top;
+    y = top;
+  }
+  if (handle.includes("s"))
+    height = Math.min(1 - y, Math.max(min, height + dy));
+  return { ...a, x, y, width, height };
 }
 function Mosaic({
   video,
