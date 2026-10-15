@@ -159,44 +159,52 @@ main {
   margin-top: 8px;
 }
 .media-list {
-  flex: 1;
+  flex: none;
   margin-top: 16px;
   max-height: 350px;
   overflow: auto;
 }
 .media-card {
   width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   text-align: left;
-  padding: 10px;
-  margin-bottom: 10px;
+  padding: 7px 9px;
+  margin-bottom: 6px;
   white-space: normal;
+}
+.media-info {
+  min-width: 0;
+  flex: 1;
 }
 .media-card strong {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  margin: 8px 0 3px;
+  font-size: 13px;
+  margin-bottom: 1px;
 }
 .media-card small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: #7d8ca1;
   font-size: 11px;
 }
 .thumbnail {
-  height: 65px;
+  flex: none;
+  width: 30px;
+  height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
   background: #e5edf9;
   border-radius: 5px;
   color: #678ab9;
-  font-size: 26px;
-  position: relative;
-}
-.thumbnail small {
-  position: absolute;
-  bottom: 4px;
-  right: 8px;
+  font-size: 13px;
 }
 .empty-library {
   color: #8794a9;
