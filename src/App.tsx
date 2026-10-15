@@ -788,11 +788,11 @@ export function App() {
         </div>
       </header>
       <div className="steps">
-        <span className="active">1　録画・動画追加</span>
+        <span className="active">録画・動画追加</span>
         <span>›</span>
-        <span>2　不要な部分をカット</span>
+        <span>不要な部分をカット</span>
         <span>›</span>
-        <span>3　並べ替えて書き出し</span>
+        <span>並べ替えて書き出し</span>
         <button
           disabled={disabled || !isTauri()}
           onClick={() =>
