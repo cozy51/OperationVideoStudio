@@ -1,4 +1,5 @@
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { resizeAnnotation } from "../src/AnnotationEditor";
 import {
   newAnnotation,
   validateAnnotation,
@@ -62,4 +63,29 @@ it("縦動画のクリック座標を出力の余白に合わせる", () => {
       1080,
     ),
   ).toEqual([960, 540]);
+});
+describe("resizeAnnotation", () => {
+  const a = newAnnotation("rectangle", 0, 10);
+  it("横と縦を独立して変更できる", () => {
+    const wider = resizeAnnotation(a, "e", 0.1, 0.3);
+    expect(wider.width).toBeCloseTo(a.width + 0.1);
+    expect(wider.height).toBe(a.height);
+    const taller = resizeAnnotation(a, "s", 0.3, 0.1);
+    expect(taller.height).toBeCloseTo(a.height + 0.1);
+    expect(taller.width).toBe(a.width);
+  });
+  it("左上の角では反対側の辺を固定したまま縮める", () => {
+    const r = resizeAnnotation(a, "nw", 0.05, 0.05);
+    expect(r.x + r.width).toBeCloseTo(a.x + a.width);
+    expect(r.y + r.height).toBeCloseTo(a.y + a.height);
+    expect(r.width).toBeCloseTo(a.width - 0.05);
+  });
+  it("画面外や最小サイズ未満にはならない", () => {
+    const r = resizeAnnotation(a, "se", 5, 5);
+    expect(r.x + r.width).toBeCloseTo(1);
+    expect(r.y + r.height).toBeCloseTo(1);
+    const tiny = resizeAnnotation(a, "w", 5, 0);
+    expect(tiny.width).toBeCloseTo(0.01);
+    expect(resizeAnnotation(a, "", -5, -5)).toMatchObject({ x: 0, y: 0 });
+  });
 });

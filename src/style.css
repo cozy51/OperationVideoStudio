@@ -132,6 +132,10 @@ main {
   background: white;
   padding: 20px;
   overflow: auto;
+  /* Side panels scroll inside the row instead of making the preview row
+     as tall as their content (e.g. long annotation settings). */
+  height: 0;
+  min-height: 100%;
 }
 .library {
   border-right: 1px solid #e0e7f1;
@@ -155,44 +159,52 @@ main {
   margin-top: 8px;
 }
 .media-list {
-  flex: 1;
+  flex: none;
   margin-top: 16px;
   max-height: 350px;
   overflow: auto;
 }
 .media-card {
   width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   text-align: left;
-  padding: 10px;
-  margin-bottom: 10px;
+  padding: 7px 9px;
+  margin-bottom: 6px;
   white-space: normal;
+}
+.media-info {
+  min-width: 0;
+  flex: 1;
 }
 .media-card strong {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  margin: 8px 0 3px;
+  font-size: 13px;
+  margin-bottom: 1px;
 }
 .media-card small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: #7d8ca1;
   font-size: 11px;
 }
 .thumbnail {
-  height: 65px;
+  flex: none;
+  width: 30px;
+  height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
   background: #e5edf9;
   border-radius: 5px;
   color: #678ab9;
-  font-size: 26px;
-  position: relative;
-}
-.thumbnail small {
-  position: absolute;
-  bottom: 4px;
-  right: 8px;
+  font-size: 13px;
 }
 .empty-library {
   color: #8794a9;
@@ -717,7 +729,8 @@ progress {
   color: #71839b;
   margin-top: 7px;
 }
-.properties input[type="text"] {
+.properties input[type="text"],
+.properties textarea {
   display: block;
   width: 100%;
   margin-top: 7px;
@@ -762,6 +775,7 @@ progress {
   pointer-events: auto;
   cursor: move;
   touch-action: none;
+  user-select: none;
 }
 .annotation-hit.selected {
   outline: 2px dashed #559eff;
@@ -854,7 +868,7 @@ progress {
   min-height: 70px;
 }
 .annotation-hit.selected:after {
-  content: "ドラッグで移動";
+  content: "ドラッグで移動・□でサイズ変更";
   position: absolute;
   left: 0;
   top: -22px;
@@ -904,4 +918,56 @@ progress {
 }
 .annotation-drag-label {
   pointer-events: none;
+}
+.properties textarea {
+  resize: vertical;
+  font: inherit;
+}
+.resize-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  margin: -5px;
+  background: white;
+  border: 2px solid #2469dc;
+  border-radius: 2px;
+  z-index: 1;
+}
+.resize-handle.n,
+.resize-handle.s {
+  left: 50%;
+  cursor: ns-resize;
+}
+.resize-handle.e,
+.resize-handle.w {
+  top: 50%;
+  cursor: ew-resize;
+}
+.resize-handle.n,
+.resize-handle.ne,
+.resize-handle.nw {
+  top: 0;
+}
+.resize-handle.s,
+.resize-handle.se,
+.resize-handle.sw {
+  top: 100%;
+}
+.resize-handle.w,
+.resize-handle.nw,
+.resize-handle.sw {
+  left: 0;
+}
+.resize-handle.e,
+.resize-handle.ne,
+.resize-handle.se {
+  left: 100%;
+}
+.resize-handle.ne,
+.resize-handle.sw {
+  cursor: nesw-resize;
+}
+.resize-handle.nw,
+.resize-handle.se {
+  cursor: nwse-resize;
 }

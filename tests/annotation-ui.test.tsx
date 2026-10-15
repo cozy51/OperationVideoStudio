@@ -135,3 +135,20 @@ it("素材の音声だけを別トラックに追加して保存できる", asyn
   });
   expect(saved.project.clips).toHaveLength(1);
 });
+it("注釈バーをダブルクリックすると文字欄で編集でき、改行も入力できる", async () => {
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+    cb(0);
+    return 0;
+  });
+  Element.prototype.scrollIntoView = vi.fn();
+  Element.prototype.setPointerCapture = vi.fn();
+  render(<App />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "プロジェクトを開く" }));
+  await user.click(await screen.findByRole("button", { name: "テキスト" }));
+  await user.dblClick(screen.getByTitle("ダブルクリックで文字を編集"));
+  const text = screen.getByLabelText("文字");
+  expect(document.activeElement).toBe(text);
+  await user.keyboard("一行目{Enter}二行目");
+  expect((text as HTMLTextAreaElement).value).toBe("一行目\n二行目");
+});

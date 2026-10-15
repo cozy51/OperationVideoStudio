@@ -9,6 +9,19 @@ import {
   type ClickInfo,
   type Annotation,
 } from "./annotations";
+// Moves keyboard focus to the text field of the selected annotation's settings.
+export function focusAnnotationText() {
+  requestAnimationFrame(() => {
+    const field = document.getElementById("annotation-text") as
+      | HTMLInputElement
+      | HTMLTextAreaElement
+      | null;
+    if (!field) return;
+    field.scrollIntoView({ block: "nearest" });
+    field.focus();
+    field.select();
+  });
+}
 export function AnnotationTools({
   time,
   total,
@@ -33,7 +46,7 @@ export function AnnotationTools({
         </button>
       ))}
       <p className="hint">
-        現在の時刻に追加し、プレビュー上でドラッグして配置できます。
+        現在の時刻に追加し、プレビュー上でドラッグして配置できます。文字はダブルクリックで編集できます。
       </p>
     </div>
   );
@@ -99,11 +112,23 @@ export function AnnotationProperties({
         <>
           <label>
             文字
-            <input
-              maxLength={1000}
-              value={item.text}
-              onChange={(e) => change({ ...item, text: e.target.value })}
-            />
+            {item.kind === "text" ? (
+              <textarea
+                id="annotation-text"
+                rows={3}
+                maxLength={1000}
+                value={item.text}
+                onChange={(e) => change({ ...item, text: e.target.value })}
+              />
+            ) : (
+              <input
+                id="annotation-text"
+                type="text"
+                maxLength={1000}
+                value={item.text}
+                onChange={(e) => change({ ...item, text: e.target.value })}
+              />
+            )}
           </label>
           {number("fontSize", 8, 160, 1)}
           <label>
@@ -176,7 +201,22 @@ export function OverlayPreview({
   const canvas = useRef<HTMLCanvasElement>(null);
   const [draft, setDraft] = useState<Annotation | null>(null);
   const visibleItems = items.map((a) => (draft?.id === a.id ? draft : a));
-  const drag = useRef<{ a: Annotation; x: number; y: number } | null>(null);
+  const drag = useRef<{
+    a: Annotation;
+    x: number;
+    y: number;
+    handle: string;
+  } | null>(null);
+  const dragged = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = drag.current!;
+    const bounds = e.currentTarget.parentElement!.getBoundingClientRect();
+    return resizeAnnotation(
+      d.a,
+      d.handle,
+      (e.clientX - d.x) / bounds.width,
+      (e.clientY - d.y) / bounds.height,
+    );
+  };
   useEffect(() => {
     const ctx = canvas.current?.getContext("2d");
     if (!ctx) return;
@@ -228,43 +268,33 @@ export function OverlayPreview({
           }}
           onPointerDown={(e) => {
             e.stopPropagation();
+            // Keep the browser from starting a text-selection drag, which
+            // cancels the pointer and drops the move/resize.
+            e.preventDefault();
             e.currentTarget.setPointerCapture(e.pointerId);
             select(a.id);
-            drag.current = { a, x: e.clientX, y: e.clientY };
+            drag.current = {
+              a,
+              x: e.clientX,
+              y: e.clientY,
+              handle: (e.target as HTMLElement).dataset.handle ?? "",
+            };
+          }}
+          onDoubleClick={() => {
+            select(a.id);
+            if (a.kind === "text" || a.kind === "marker") focusAnnotationText();
           }}
           onPointerMove={(e) => {
-            const d = drag.current;
-            if (!d) return;
-            const bounds =
-              e.currentTarget.parentElement!.getBoundingClientRect();
-            const x = Math.min(
-                1 - a.width,
-                Math.max(0, d.a.x + (e.clientX - d.x) / bounds.width),
-              ),
-              y = Math.min(
-                1 - a.height,
-                Math.max(0, d.a.y + (e.clientY - d.y) / bounds.height),
-              );
-            setDraft({ ...d.a, x, y });
+            if (drag.current) setDraft(dragged(e));
           }}
           onPointerUp={(e) => {
-            if (!drag.current) return;
             const d = drag.current;
+            if (!d) return;
+            const moved = e.clientX !== d.x || e.clientY !== d.y;
+            const next = dragged(e);
             drag.current = null;
             setDraft(null);
-            const bounds =
-              e.currentTarget.parentElement!.getBoundingClientRect();
-            change({
-              ...d.a,
-              x: Math.min(
-                1 - d.a.width,
-                Math.max(0, d.a.x + (e.clientX - d.x) / bounds.width),
-              ),
-              y: Math.min(
-                1 - d.a.height,
-                Math.max(0, d.a.y + (e.clientY - d.y) / bounds.height),
-              ),
-            });
+            if (moved) change(next);
           }}
           onPointerCancel={() => {
             drag.current = null;
@@ -272,10 +302,49 @@ export function OverlayPreview({
           }}
         >
           <span className="annotation-drag-label" />
+          {selected === a.id &&
+            resizeHandles.map((handle) => (
+              <span
+                key={handle}
+                data-handle={handle}
+                className={`resize-handle ${handle}`}
+                aria-label="サイズ変更"
+              />
+            ))}
         </div>
       ))}
     </div>
   );
+}
+const resizeHandles = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
+// Moves (handle "") or resizes an annotation by the given drag delta,
+// expressed as a fraction of the preview, keeping it inside the frame.
+export function resizeAnnotation(
+  a: Annotation,
+  handle: string,
+  dx: number,
+  dy: number,
+): Annotation {
+  const min = 0.01;
+  let { x, y, width, height } = a;
+  if (!handle) {
+    x = Math.min(1 - width, Math.max(0, x + dx));
+    y = Math.min(1 - height, Math.max(0, y + dy));
+  }
+  if (handle.includes("w")) {
+    const left = Math.min(x + width - min, Math.max(0, x + dx));
+    width += x - left;
+    x = left;
+  }
+  if (handle.includes("e")) width = Math.min(1 - x, Math.max(min, width + dx));
+  if (handle.includes("n")) {
+    const top = Math.min(y + height - min, Math.max(0, y + dy));
+    height += y - top;
+    y = top;
+  }
+  if (handle.includes("s"))
+    height = Math.min(1 - y, Math.max(min, height + dy));
+  return { ...a, x, y, width, height };
 }
 function Mosaic({
   video,
@@ -363,6 +432,16 @@ export function AnnotationTrack({
           <div
             key={a.id}
             className="annotation-bar"
+            title={
+              a.kind === "text" || a.kind === "marker"
+                ? "ダブルクリックで文字を編集"
+                : undefined
+            }
+            onDoubleClick={() => {
+              select(a.id);
+              if (a.kind === "text" || a.kind === "marker")
+                focusAnnotationText();
+            }}
             style={{
               top: 5 + index * 38,
               left: `${(a.start / total) * 100}%`,
@@ -404,7 +483,8 @@ export function AnnotationTrack({
             onPointerUp={(e) => {
               const d = drag.current;
               drag.current = null;
-              if (!d) return;
+              // A plain click (or double-click) must not add an undo step.
+              if (!d || e.clientX === d.x) return;
               const delta = ((e.clientX - d.x) / d.width) * total;
               let start = d.a.start,
                 end = d.a.end;

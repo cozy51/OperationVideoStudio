@@ -788,11 +788,11 @@ export function App() {
         </div>
       </header>
       <div className="steps">
-        <span className="active">1　録画・動画追加</span>
+        <span className="active">録画・動画追加</span>
         <span>›</span>
-        <span>2　不要な部分をカット</span>
+        <span>不要な部分をカット</span>
         <span>›</span>
-        <span>3　並べ替えて書き出し</span>
+        <span>並べ替えて書き出し</span>
         <button
           disabled={disabled || !isTauri()}
           onClick={() =>
@@ -854,7 +854,7 @@ export function App() {
                 disabled={disabled}
                 key={m.id}
                 aria-label={`素材 ${m.name}`}
-                title="クリックで内容を再生、ダブルクリックで末尾に追加"
+                title={`${m.name}（${m.width}×${m.height}）\nクリックで内容を再生、ダブルクリックで末尾に追加`}
                 onClick={() => {
                   setSourcePreview({ mediaId: m.id, time: 0 });
                   setSelected(null);
@@ -877,17 +877,15 @@ export function App() {
                   })
                 }
               >
-                <div className="thumbnail">
+                <span className="thumbnail" aria-hidden="true">
                   ▶
+                </span>
+                <span className="media-info">
+                  <strong>{m.name}</strong>
                   <small>
-                    {m.width} × {m.height}
+                    {formatTime(m.duration)}・{m.hasAudio ? "音声あり" : "音声なし"}
                   </small>
-                </div>
-                <strong title={m.name}>{m.name}</strong>
-                <small>
-                  {formatTime(m.duration)}　
-                  {m.hasAudio ? "音声あり" : "音声なし"}
-                </small>
+                </span>
               </button>
             ))}
             {!project.media.length && (
