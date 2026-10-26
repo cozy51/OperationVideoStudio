@@ -58,6 +58,7 @@ Rust の動画処理テストには `ffmpeg` と `ffprobe` が PATH に必要で
 - `src-tauri/tests/video_pipeline.rs`: 実際の FFmpeg で異なる解像度/fps/音声の素材を編集するテスト
 - `tests/editor.test.ts`: 編集データの境界・削除・分割テスト
 - `docs/plan.md`: 段階的実装計画
+- `docs/software-approval-request.md`: 社内のソフトウェア利用許可申請用の説明資料
 
 ## 安全性と制約
 
