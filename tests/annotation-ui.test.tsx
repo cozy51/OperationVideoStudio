@@ -3,16 +3,31 @@ import React from "react";
 import { it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { invoke } from "@tauri-apps/api/core";
+import * as platform from "../src/platform";
 import { App } from "../src/App";
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(),
-  isTauri: () => true,
-  convertFileSrc: (s: string) => s,
+vi.mock("../src/platform", () => ({
+  mediaUrl: (m: { path: string }) => m.path,
+  recoverProject: vi.fn(),
+  autosave: vi.fn(),
+  openProject: vi.fn(),
+  saveProject: vi.fn(),
+  importVideos: vi.fn(),
+  addFiles: vi.fn(),
+  addRecording: vi.fn(),
+  exportVideo: vi.fn(),
+  cancelExport: vi.fn(),
 }));
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(async () => () => {}),
-}));
+const savedProject = () => ({
+  project: vi.mocked(platform.saveProject).mock.calls.at(-1)![0],
+});
+function mockPlatform(opened: unknown) {
+  vi.mocked(platform.recoverProject).mockReset().mockResolvedValue(null);
+  vi.mocked(platform.autosave).mockReset().mockResolvedValue();
+  vi.mocked(platform.saveProject).mockReset().mockResolvedValue(true);
+  vi.mocked(platform.openProject)
+    .mockReset()
+    .mockImplementation(async () => structuredClone(opened) as never);
+}
 const source = {
   id: "m",
   path: "C:/source.mp4",
@@ -44,19 +59,11 @@ beforeEach(() => {
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
     () => ctx as unknown as CanvasRenderingContext2D,
   );
-  vi.mocked(invoke).mockReset();
-  vi.mocked(invoke).mockImplementation(async (command) => {
-    if (command === "recover_project") return null;
-    if (command === "open_project")
-      return {
+  mockPlatform({
         version: 1,
         media: [source],
         clips: [{ id: "c", mediaId: "m", start: 0, end: 10 }],
-      };
-    if (command === "save_project") return true;
-    if (command === "autosave") return null;
-    throw new Error(command);
-  });
+      });
 });
 afterEach(() => {
   cleanup();
@@ -72,9 +79,7 @@ it("時刻付きコメントを追加・編集・複製し、元動画参照と�
   await user.type(text, "ここをクリック");
   await user.click(screen.getByRole("button", { name: "複製" }));
   await user.click(screen.getByRole("button", { name: "保存" }));
-  const saved = vi
-    .mocked(invoke)
-    .mock.calls.find(([c]) => c === "save_project")?.[1] as {
+  const saved = savedProject() as unknown as {
     project: {
       version: number;
       annotations: { text: string; start: number; end: number; id: string }[];
@@ -98,9 +103,7 @@ it("黒画面・無音素材を追加しても実ファイル参照を作らな�
     screen.getByRole("button", { name: "黒画面・無音を末尾に追加" }),
   );
   await user.click(screen.getByRole("button", { name: "保存" }));
-  const saved = vi
-    .mocked(invoke)
-    .mock.calls.find(([c]) => c === "save_project")?.[1] as {
+  const saved = savedProject() as unknown as {
     project: { media: { kind: string; path: string }[]; clips: unknown[] };
   };
   expect(saved.project.media[0].kind).toBe("gap");
@@ -118,9 +121,7 @@ it("素材の音声だけを別トラックに追加して保存できる", asyn
     screen.getByRole("button", { name: "この素材の音声だけを追加" }),
   );
   await user.click(screen.getByRole("button", { name: "保存" }));
-  const saved = vi
-    .mocked(invoke)
-    .mock.calls.find(([c]) => c === "save_project")?.[1] as {
+  const saved = savedProject() as unknown as {
     project: {
       audio: { mediaId: string; at: number; start: number; end: number }[];
       clips: unknown[];

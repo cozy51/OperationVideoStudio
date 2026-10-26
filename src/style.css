@@ -579,51 +579,34 @@ progress {
   font-size: 12px;
 }
 .recordbar {
-  padding: 12px;
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  padding: 10px 14px;
   display: flex;
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
   background: white;
+  border-radius: 10px;
+  box-shadow: 0 8px 28px #14264140;
 }
 .recordbar strong {
   color: #d6404a;
-  font-size: 19px;
-  min-width: 130px;
+  font-size: 17px;
+  min-width: 150px;
 }
-.recordbar small {
-  font-size: 10px;
-  color: #b72f3c;
+.pip-body {
+  margin: 0;
+  background: white;
 }
-.region-mode,
-.region-mode body,
-.region-mode #root {
-  background: transparent !important;
-}
-.region-overlay {
-  position: fixed;
-  inset: 0;
-  background: #16355933;
-  cursor: crosshair;
-  user-select: none;
-}
-.region-help {
-  position: absolute;
-  top: 35px;
-  left: 50%;
-  transform: translateX(-50%);
-  background: #fff;
-  padding: 16px;
-  border-radius: 8px;
-  color: #24466e;
-  pointer-events: none;
-}
-.region-box {
-  position: absolute;
-  border: 3px solid #2979f0;
-  background: #dfeaff22;
-  pointer-events: none;
-  box-shadow: 0 0 0 99999px #14264155;
+.pip-body .recordbar {
+  position: static;
+  transform: none;
+  box-shadow: none;
+  border-radius: 0;
 }
 @media (min-width: 1900px) {
   main {
@@ -739,24 +722,6 @@ progress {
   padding: 8px;
   background: white;
   color: #304666;
-}
-.capture-outline {
-  position: fixed;
-  inset: 0;
-  border: 5px solid #ed263c;
-  background: transparent;
-  pointer-events: none;
-  box-sizing: border-box;
-}
-.capture-outline span {
-  position: absolute;
-  top: 0;
-  left: 0;
-  background: #ed263c;
-  color: white;
-  padding: 4px 10px;
-  font-size: 14px;
-  font-weight: bold;
 }
 .preview {
   position: relative;
