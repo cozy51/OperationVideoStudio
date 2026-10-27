@@ -1,7 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import appIcon from "./assets/app-icon.png";
-import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { createPortal } from "react-dom";
+import * as platform from "./platform";
+import {
+  prepareRecording,
+  recordingSupported,
+  type RecordingSession,
+} from "./recorder";
+import { ExportCancelled } from "./exporter";
 import {
   cutRange,
   cutProject,
@@ -22,177 +28,44 @@ import {
   OverlayPreview,
   AnnotationTrack,
 } from "./AnnotationEditor";
-import {
-  renderAssets,
-  outputSize,
-  type Annotation,
-  type ClickInfo,
-} from "./annotations";
+import { renderAssets, outputSize, type Annotation } from "./annotations";
 import { AudioPlayback, AudioProperties } from "./AudioTrack";
 import type { AudioClip } from "./editor";
-type Target = {
-  id: string;
-  name: string;
-  kind: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-};
-type ToolStatus = { ready: boolean; details: string; directory: string | null };
-type Status = { active: boolean; paused: boolean; seconds: number };
+type Status = { paused: boolean; seconds: number };
 type Progress = { progress: number; done: boolean; error: string | null };
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
-function useEvent<T>(name: string, handler: (payload: T) => void) {
-  const latest = useRef(handler);
-  latest.current = handler;
-  useEffect(() => {
-    if (!isTauri()) return;
-    let disposed = false;
-    let off: (() => void) | undefined;
-    listen<T>(name, (e) => latest.current(e.payload)).then((unlisten) => {
-      if (disposed) unlisten();
-      else off = unlisten;
-    });
-    return () => {
-      disposed = true;
-      off?.();
-    };
-  }, [name]);
-}
-export function RecordingBar() {
-  const [status, setStatus] = useState<Status>({
-    active: false,
-    paused: false,
-    seconds: 0,
-  });
-  const [count, setCount] = useState(0);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  useEvent<number>("record-countdown", setCount);
-  useEffect(() => {
-    let disposed = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    async function poll() {
-      try {
-        const status = await invoke<Status>("record_status");
-        if (disposed) return;
-        setStatus(status);
-        if (status.active) setCount(0);
-      } catch (e) {
-        if (disposed) return;
-        setError(message(e));
-        // A failed encoder still has a backend session to stop and clean up.
-        setStatus((s) => ({ ...s, active: true }));
-      }
-      if (!disposed) timer = setTimeout(() => void poll(), 500);
-    }
-    void poll();
-    return () => {
-      disposed = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, []);
-  async function act(command: string) {
-    setBusy(true);
-    try {
-      await invoke(command);
-    } catch (e) {
-      setError(message(e));
-    } finally {
-      setBusy(false);
-    }
-  }
+type PipWindow = { requestWindow(o: { width: number; height: number }): Promise<Window> };
+const pictureInPicture = () =>
+  (window as unknown as { documentPictureInPicture?: PipWindow })
+    .documentPictureInPicture;
+export function RecordingBar({
+  status,
+  pause,
+  resume,
+  stop,
+  popout,
+}: {
+  status: Status;
+  pause: () => void;
+  resume: () => void;
+  stop: () => void;
+  popout?: () => void;
+}) {
   return (
-    <div className="recordbar">
+    <div className="recordbar" role="toolbar" aria-label="録画中">
       <strong>
-        ● {count ? `${count} 秒後に録画` : formatTime(status.seconds)}
+        ● {status.paused ? "一時停止中" : "録画中"} {formatTime(status.seconds)}
       </strong>
-      <button
-        disabled={!status.active || busy}
-        onClick={() =>
-          void act(status.paused ? "resume_recording" : "pause_recording")
-        }
-      >
+      <button onClick={status.paused ? resume : pause}>
         {status.paused ? "再開" : "一時停止"}
       </button>
-      <button
-        className="danger"
-        disabled={!status.active || busy}
-        onClick={() => void act("stop_recording")}
-      >
+      <button className="danger" onClick={stop}>
         停止・編集
       </button>
-      {error && <small role="alert">{error}</small>}
-    </div>
-  );
-}
-export function CaptureOutline() {
-  useEffect(() => {
-    void invoke("capture_outline_ready").catch(() => {});
-  }, []);
-  return (
-    <div className="capture-outline">
-      <span>録画対象</span>
-    </div>
-  );
-}
-export function RegionPicker() {
-  const [origin, setOrigin] = useState<{ x: number; y: number } | null>(null);
-  const [end, setEnd] = useState<{ x: number; y: number } | null>(null);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape")
-        void invoke("close_region").catch((e) => setError(message(e)));
-    };
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
-  }, []);
-  const params = new URLSearchParams(location.hash.split("?")[1]);
-  return (
-    <div
-      className="region-overlay"
-      onPointerDown={(e) => {
-        e.currentTarget.setPointerCapture(e.pointerId);
-        setOrigin({ x: e.clientX, y: e.clientY });
-        setEnd({ x: e.clientX, y: e.clientY });
-      }}
-      onPointerMove={(e) => {
-        if (origin) setEnd({ x: e.clientX, y: e.clientY });
-      }}
-      onPointerUp={(e) => {
-        if (!origin) return;
-        const d = devicePixelRatio;
-        void invoke("complete_region", {
-          x:
-            Number(params.get("x")) +
-            Math.round(Math.min(origin.x, e.clientX) * d),
-          y:
-            Number(params.get("y")) +
-            Math.round(Math.min(origin.y, e.clientY) * d),
-          width: Math.round(Math.abs(e.clientX - origin.x) * d),
-          height: Math.round(Math.abs(e.clientY - origin.y) * d),
-        }).catch((e) => {
-          setError(message(e));
-          setOrigin(null);
-          setEnd(null);
-        });
-      }}
-    >
-      <div className="region-help">
-        録画する範囲をドラッグしてください　•　Escでキャンセル {error}
-      </div>
-      {origin && end && (
-        <div
-          className="region-box"
-          style={{
-            left: Math.min(origin.x, end.x),
-            top: Math.min(origin.y, end.y),
-            width: Math.abs(end.x - origin.x),
-            height: Math.abs(end.y - origin.y),
-          }}
-        />
+      {popout && (
+        <button title="ほかのアプリの上に小さく表示します" onClick={popout}>
+          最前面に表示
+        </button>
       )}
     </div>
   );
@@ -221,19 +94,19 @@ export function App() {
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
-  const outlineQueue = useRef<Promise<unknown>>(Promise.resolve());
   const [recordDialog, setRecordDialog] = useState(false);
-  const [tools, setTools] = useState<ToolStatus | null>(null);
-  const [recordingFolder, setRecordingFolder] = useState<string | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
-  const [targets, setTargets] = useState<Target[]>([]);
-  const [target, setTarget] = useState<Target | null>(null);
   const [microphone, setMicrophone] = useState(false);
   const [systemAudio, setSystemAudio] = useState(false);
-  const [highlightClicks, setHighlightClicks] = useState(false);
   const [cursor, setCursor] = useState(true);
-  const [quality, setQuality] = useState("standard");
+  const [quality, setQuality] = useState<"standard" | "high">("standard");
   const [recording, setRecording] = useState(false);
+  const [recordStatus, setRecordStatus] = useState<Status>({
+    paused: false,
+    seconds: 0,
+  });
+  const session = useRef<RecordingSession | null>(null);
+  const [pip, setPip] = useState<Window | null>(null);
   const [count, setCount] = useState(0);
   const [resolution, setResolution] = useState("1080p");
   const [cutStart, setCutStart] = useState(10);
@@ -356,75 +229,34 @@ export function App() {
     }
   }
   async function importVideos() {
-    await task(async () => addMedia(await invoke<Media[]>("import_videos")));
+    await task(async () => addMedia(await platform.importVideos()));
   }
-  useEvent<Media & { clicks?: ClickInfo[] }>("recording-finished", (m) => {
-    setRecording(false);
-    const { clicks = [], ...source } = m;
-    const p = current.current,
-      offset = duration(p.clips);
-    commit({
-      ...p,
-      version: 2,
-      media: [...p.media, source],
-      clips: [
-        ...p.clips,
-        {
-          id: crypto.randomUUID(),
-          mediaId: source.id,
-          start: 0,
-          end: source.duration,
-        },
-      ],
-      clicks: [
-        ...(p.clicks ?? []),
-        ...clicks.map((c) => ({
-          ...c,
-          time: c.time + offset,
-          mediaId: source.id,
-        })),
-      ],
-    });
-    setRecordDialog(false);
-    setCount(0);
-  });
-  useEvent<null>("recording-stopped", () => setRecording(false));
-  useEvent<number>("record-countdown", setCount);
-  useEvent<Target>("region-selected", (t) => {
-    setTarget(t);
-    setTargets((list) => [...list.filter((i) => i.kind !== "region"), t]);
-  });
-  useEvent<Progress>("export-progress", (p) => {
-    setProgress(p);
-    if (p.done) {
-      if (p.error) setError(p.error);
-      else setNotice("MP4の書き出しが完了しました。");
-    }
-  });
   useEffect(() => {
-    if (!isTauri()) return;
-    void invoke<Project | null>("recover_project")
+    void platform
+      .recoverProject()
       .then((p) => {
-        if (p && p.clips.length) setRecovery(validateProject(p));
+        if (p && p.clips.length) setRecovery(p);
       })
       .catch((e) => setError(message(e)));
   }, []);
   useEffect(() => {
-    if (!isTauri() || !project.media.length) return;
+    if (!project.media.length) return;
     const timer = setTimeout(
       () =>
-        void invoke("autosave", { project }).catch((e) =>
-          setError(`自動保存に失敗しました: ${message(e)}`),
-        ),
+        void platform
+          .autosave(project)
+          .catch((e) => setError(`自動保存に失敗しました: ${message(e)}`)),
       1000,
     );
     return () => clearTimeout(timer);
   }, [project]);
-  useEvent<Media[]>("media-dropped", (items) => {
-    if (!disabled) addMedia(items);
-    else setError("処理が完了してから動画を追加してください。");
-  });
-  useEvent<string>("backend-error", setError);
+  async function dropFiles(list: File[]) {
+    if (disabled) {
+      setError("処理が完了してから動画を追加してください。");
+      return;
+    }
+    await task(async () => addMedia(await platform.addFiles(list)));
+  }
   useEffect(() => {
     const v = video.current;
     if (!v || !hit) return;
@@ -440,7 +272,7 @@ export function App() {
         if (e instanceof DOMException && e.name === "AbortError") return;
         setPlaying(false);
         setError(
-          `プレビューを再生できません: ${message(e)}。元動画のコーデックがWebView2に非対応の場合はH.264 MP4に変換してください。`,
+          `プレビューを再生できません: ${message(e)}。元動画のコーデックがブラウザに非対応の場合はH.264 MP4に変換してください。`,
         );
       });
     else v.pause();
@@ -532,10 +364,10 @@ export function App() {
         redo();
       } else if (e.ctrlKey && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        if (isTauri())
-          void task(async () => {
-            await invoke("save_project", { project });
-          });
+        void task(async () => {
+          if (await platform.saveProject(project))
+            setNotice("プロジェクトを保存しました。");
+        });
       } else if (e.ctrlKey && e.key.toLowerCase() === "b") {
         e.preventDefault();
         if (!sourcePreview)
@@ -561,68 +393,10 @@ export function App() {
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
   });
-  useEffect(() => {
-    if (!isTauri() || !recordDialog || !target) return;
-    let active = true;
-    const update = () => {
-      outlineQueue.current = outlineQueue.current
-        .catch(() => {})
-        .then(async () => {
-          if (!active) return;
-          try {
-            await invoke("show_capture_outline", { targetId: target.id });
-          } catch (e) {
-            if (active) {
-              const error = message(e);
-              setError(error);
-              if (
-                target.kind === "window" &&
-                /最小化|閉じられ|別のウィンドウ/.test(error)
-              ) {
-                const list = await invoke<Target[]>("capture_targets");
-                if (active) {
-                  setTargets(list);
-                  setTarget(null);
-                }
-              }
-            }
-          }
-        });
-    };
-    update();
-    const timer = setInterval(update, 1000);
-    return () => {
-      active = false;
-      clearInterval(timer);
-      outlineQueue.current = outlineQueue.current
-        .catch(() => {})
-        .then(() => invoke("hide_capture_outline"))
-        .catch(() => {});
-    };
-  }, [recordDialog, target?.id]);
-  async function refreshTargets() {
-    await task(async () => {
-      const list = await invoke<Target[]>("capture_targets");
-      if (target?.kind === "region") list.push(target);
-      setTargets(list);
-      setTarget(list.find((t) => t.id === target?.id) ?? null);
-    });
-  }
-  async function openRecording() {
+  function openRecording() {
+    setError("");
     setRecordDialog(true);
     setCount(0);
-    setTools(null);
-    await task(async () => {
-      const [list, status, folder] = await Promise.all([
-        invoke<Target[]>("capture_targets"),
-        invoke<ToolStatus>("recording_tools"),
-        invoke<string | null>("recording_folder"),
-      ]);
-      setTargets(list);
-      setTarget(list[0] ?? null);
-      setTools(status);
-      setRecordingFolder(folder);
-    });
   }
   function changeAudio(a: AudioClip) {
     commit({
@@ -690,61 +464,148 @@ export function App() {
       clips: moveClip(project.clips, selectedIndex, selectedIndex + delta),
     });
   }
-  async function changeRecordingFolder() {
-    await task(async () => {
-      const folder = await invoke<string | null>("choose_recording_folder");
-      if (folder) setRecordingFolder(folder);
-    });
-  }
-  async function chooseFFmpeg() {
-    await task(async () => {
-      const status = await invoke<ToolStatus | null>("choose_ffmpeg_folder");
-      if (status) setTools(status);
-    });
-  }
   async function startRecording() {
-    if (!target || !tools?.ready) return;
     await task(async () => {
       setPlaying(false);
+      let prepared: Awaited<ReturnType<typeof prepareRecording>>;
       try {
-        const started = await invoke<boolean>("start_recording", {
-          options: {
-            target,
-            cursor,
-            quality,
-            microphone,
-            systemAudio,
-            highlightClicks,
-          },
+        prepared = await prepareRecording({
+          cursor,
+          quality,
+          microphone,
+          systemAudio,
         });
-        setRecording(started);
-        if (started) setRecordDialog(false);
-      } finally {
-        setCount(0);
+      } catch (e) {
+        if (e instanceof DOMException && e.name === "NotAllowedError")
+          throw new Error(
+            "画面の共有が許可されませんでした。もう一度「録画開始」を押し、共有する画面を選んでください。",
+          );
+        throw e;
       }
+      for (let i = 3; i > 0; i--) {
+        setCount(i);
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      setCount(0);
+      let s: RecordingSession;
+      try {
+        s = prepared.start();
+      } catch (e) {
+        prepared.cancel();
+        throw e;
+      }
+      session.current = s;
+      setRecordStatus({ paused: false, seconds: 0 });
+      setRecording(true);
+      setRecordDialog(false);
+      const timer = setInterval(
+        () => setRecordStatus({ paused: s.paused, seconds: s.seconds() }),
+        250,
+      );
+      void s.finished
+        .then(async (result) => {
+          setBusy(true);
+          setNotice("録画を取り込んでいます…");
+          const m = await platform.addRecording(current.current, result);
+          const p = current.current;
+          commit({
+            ...p,
+            media: [...p.media, m],
+            clips: [
+              ...p.clips,
+              {
+                id: crypto.randomUUID(),
+                mediaId: m.id,
+                start: 0,
+                end: m.duration,
+              },
+            ],
+          });
+          setNotice(`${m.name} を追加しました。`);
+        })
+        .catch((e) => setError(message(e)))
+        .finally(() => {
+          clearInterval(timer);
+          session.current = null;
+          setRecording(false);
+          setBusy(false);
+          setPip((w) => {
+            w?.close();
+            return null;
+          });
+        });
     });
+  }
+  async function popoutRecordingBar() {
+    const api = pictureInPicture();
+    if (!api) return;
+    try {
+      const w = await api.requestWindow({ width: 420, height: 72 });
+      for (const sheet of [...document.styleSheets]) {
+        try {
+          const style = w.document.createElement("style");
+          style.textContent = [...sheet.cssRules].map((r) => r.cssText).join("\n");
+          w.document.head.append(style);
+        } catch {
+          if (sheet.href) {
+            const link = w.document.createElement("link");
+            link.rel = "stylesheet";
+            link.href = sheet.href;
+            w.document.head.append(link);
+          }
+        }
+      }
+      w.document.body.className = "pip-body";
+      w.addEventListener("pagehide", () => setPip(null));
+      setPip(w);
+    } catch (e) {
+      setError(`小さなウィンドウを開けません: ${message(e)}`);
+    }
   }
   async function doExport() {
     setProgress({ progress: 0, done: false, error: null });
     try {
-      const saved = await invoke<boolean>("export_video", {
+      const saved = await platform.exportVideo(
         project,
         resolution,
-        assets: renderAssets(
+        renderAssets(
           annotations,
           outputWidth,
           outputHeight,
           !!project.clicks?.length,
         ),
-      });
+        (ratio) =>
+          setProgress((p) =>
+            p && !p.done ? { ...p, progress: Math.max(p.progress, ratio) } : p,
+          ),
+      );
       if (!saved) setProgress(null);
+      else {
+        setProgress({ progress: 1, done: true, error: null });
+        setNotice("MP4の書き出しが完了しました。");
+      }
     } catch (e) {
+      if (e instanceof ExportCancelled) {
+        setProgress(null);
+        setNotice("書き出しをキャンセルしました。");
+        return;
+      }
       setProgress({ progress: 0, done: true, error: message(e) });
       setError(message(e));
     }
   }
   return (
-    <div className="app">
+    <div
+      className="app"
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+      }}
+      onDrop={(e) => {
+        if (!e.dataTransfer.files.length) return;
+        e.preventDefault();
+        void dropFiles([...e.dataTransfer.files]);
+      }}
+    >
       <header>
         <div className="brand">
           <img className="brand-icon" src={appIcon} alt="" />
@@ -756,22 +617,27 @@ export function App() {
         <div className="toolbar">
           <button
             className="record"
-            disabled={disabled || !isTauri()}
-            onClick={() => void openRecording()}
+            disabled={disabled || !recordingSupported()}
+            title={
+              recordingSupported()
+                ? undefined
+                : "このブラウザでは録画できません。Chrome または Edge を使用してください。"
+            }
+            onClick={openRecording}
           >
             ● 録画
           </button>
           <button
-            disabled={disabled || !isTauri()}
+            disabled={disabled}
             onClick={() => void importVideos()}
           >
             ＋ 動画追加
           </button>
           <button
-            disabled={disabled || !isTauri()}
+            disabled={disabled}
             onClick={() =>
               void task(async () => {
-                if (await invoke("save_project", { project }))
+                if (await platform.saveProject(project))
                   setNotice("プロジェクトを保存しました。");
               })
             }
@@ -780,7 +646,7 @@ export function App() {
           </button>
           <button
             className="primary"
-            disabled={disabled || !project.clips.length || !isTauri()}
+            disabled={disabled || !project.clips.length}
             onClick={() => void doExport()}
           >
             MP4を書き出す ↗
@@ -794,10 +660,11 @@ export function App() {
         <span>›</span>
         <span>並べ替えて書き出し</span>
         <button
-          disabled={disabled || !isTauri()}
+          disabled={disabled}
+          title="プロジェクトファイル（.json）を選択します。別のブラウザで開く場合は、使用している動画も一緒に選択してください。"
           onClick={() =>
             void task(async () => {
-              const p = await invoke<Project | null>("open_project");
+              const p = await platform.openProject();
               if (p) {
                 commit(validateProject(p));
                 setTime(0);
@@ -808,9 +675,10 @@ export function App() {
           プロジェクトを開く
         </button>
       </div>
-      {!isTauri() && (
+      {!recordingSupported() && (
         <div className="info">
-          ブラウザ表示ではファイル・録画機能は利用できません。Windowsでデスクトップアプリを起動してください。
+          このブラウザでは画面録画を利用できません。Windows の Chrome または
+          Edge で開いてください。動画の追加・編集・書き出しは利用できます。
         </div>
       )}
       {recovery && (
@@ -968,7 +836,7 @@ export function App() {
               <video
                 ref={video}
                 key={media.id}
-                src={convertFileSrc(media.previewPath ?? media.path)}
+                src={platform.mediaUrl(media)}
                 onLoadedMetadata={() => {
                   if (video.current) {
                     video.current.currentTime = hit.sourceTime;
@@ -998,7 +866,7 @@ export function App() {
                 onError={() => {
                   setPlaying(false);
                   setError(
-                    "この動画はプレビューできません。Windows WebView2が対応するH.264/AACのMP4を使用してください。",
+                    "この動画はブラウザでプレビューできません。H.264/AACのMP4、またはWebMを使用してください。",
                   );
                 }}
               />
@@ -1494,15 +1362,38 @@ export function App() {
         </p>
       </section>
       <footer>
-        <span>ローカル処理 • 外部への動画送信なし</span>
+        <span>ブラウザ内で処理 • 動画はサーバーに送信しません</span>
         <span>
           {busy
             ? "処理中…"
             : recording
-              ? "録画中 — ツールバーから停止してください"
-              : "Phase 3 • 開発版"}
+              ? "録画中 — 上部のバーから停止してください"
+              : "Web版 • 開発版"}
         </span>
       </footer>
+      {recording &&
+        session.current &&
+        (pip ? (
+          createPortal(
+            <RecordingBar
+              status={recordStatus}
+              pause={() => session.current?.pause()}
+              resume={() => session.current?.resume()}
+              stop={() => session.current?.stop()}
+            />,
+            pip.document.body,
+          )
+        ) : (
+          <RecordingBar
+            status={recordStatus}
+            pause={() => session.current?.pause()}
+            resume={() => session.current?.resume()}
+            stop={() => session.current?.stop()}
+            popout={
+              pictureInPicture() ? () => void popoutRecordingBar() : undefined
+            }
+          />
+        ))}
       {exporting && (
         <div className="modal-backdrop">
           <div className="modal">
@@ -1512,7 +1403,7 @@ export function App() {
             <strong>{Math.round(progress.progress * 100)}%</strong>
             <button
               onClick={() =>
-                void invoke("cancel_export").catch((e) => setError(message(e)))
+                platform.cancelExport()
               }
             >
               書き出しをキャンセル
@@ -1523,15 +1414,6 @@ export function App() {
       {progress?.done && !progress.error && (
         <div className="export-result">
           書き出し完了{" "}
-          <button
-            onClick={() =>
-              void invoke("open_output_folder").catch((e) =>
-                setError(message(e)),
-              )
-            }
-          >
-            保存先フォルダーを開く
-          </button>
           <button onClick={() => setProgress(null)}>閉じる</button>
         </div>
       )}
@@ -1549,70 +1431,9 @@ export function App() {
                 {error}
               </div>
             )}
-            <div
-              className={`tool-status ${tools?.ready ? "ready" : "missing"}`}
-              role="status"
-            >
-              {!tools
-                ? "FFmpegと録画機能を確認しています…"
-                : tools.ready
-                  ? "✓ FFmpeg / FFprobe・Windows録画を使用できます"
-                  : tools.details}
-              {tools?.directory && <small>{tools.directory}</small>}
-              {tools && !tools.ready && (
-                <p>
-                  FFmpegを導入後、ffmpeg.exe と ffprobe.exe のある bin
-                  フォルダーを指定してください。PATHに導入した場合はアプリを再起動してください。
-                </p>
-              )}
-              <button disabled={busy} onClick={() => void chooseFFmpeg()}>
-                FFmpegのフォルダーを設定
-              </button>
-            </div>
-            <div className="recording-folder">
-              <strong>録画の保存先</strong>
-              <p>{recordingFolder ?? "未設定 — 初回録画時に選択します"}</p>
-              <button
-                disabled={busy}
-                onClick={() => void changeRecordingFolder()}
-              >
-                保存先を変更
-              </button>
-              <small>Rec_01 / Rec_01.mp4 のように連番で保存します。</small>
-            </div>
-            <label>
-              録画する対象
-              <select
-                disabled={busy}
-                value={target?.id ?? ""}
-                onChange={(e) =>
-                  setTarget(
-                    targets.find((t) => t.id === e.target.value) ?? null,
-                  )
-                }
-              >
-                <option value="" disabled>
-                  録画対象を選択してください
-                </option>
-                {targets.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
-            </label>
             <p className="hint">
-              選択中の対象を赤枠で表示します。赤枠は録画開始前に消えます。最小化されたウィンドウは対象外です。
+              「録画開始」を押すとブラウザの共有画面が開きます。録画する画面全体・ウィンドウ・タブを選んでください。
             </p>
-            <button disabled={busy} onClick={() => void refreshTargets()}>
-              対象一覧を更新
-            </button>
-            <button
-              disabled={busy}
-              onClick={() => void task(() => invoke("select_region"))}
-            >
-              マウスで範囲を選択
-            </button>
             <label className="check">
               <input
                 type="checkbox"
@@ -1637,32 +1458,24 @@ export function App() {
               />
               PC内部音声を録音
             </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={highlightClicks}
-                onChange={(e) => setHighlightClicks(e.target.checked)}
-              />
-              クリック位置を強調
-            </label>
             <label>
               画質
               <select
                 value={quality}
-                onChange={(e) => setQuality(e.target.value)}
+                onChange={(e) =>
+                  setQuality(e.target.value as "standard" | "high")
+                }
               >
                 <option value="standard">標準</option>
                 <option value="high">高画質</option>
               </select>
             </label>
             <p className="hint">
-              30fps / Windowsネイティブ録画
+              30fps / 共有の選択後、3秒で録画を開始します。
               <br />
-              前回の保存先を使用し、3秒で録画を開始します。
+              PC内部音声は、共有画面で「システム音声も共有する」にチェックしたときに録音されます（画面全体の共有時）。
               <br />
-              音声はWindows WASAPIで録音し、映像と結合します。
-              <br />
-              ウィンドウ録画中は対象を最小化しないでください。
+              録画中はブラウザの「共有を停止」でも停止できます。
             </p>
             {count > 0 && <strong className="countdown">{count}</strong>}
             <div className="modal-buttons">
@@ -1671,7 +1484,7 @@ export function App() {
               </button>
               <button
                 className="record"
-                disabled={busy || !target || !tools?.ready}
+                disabled={busy}
                 onClick={() => void startRecording()}
               >
                 ● 録画開始

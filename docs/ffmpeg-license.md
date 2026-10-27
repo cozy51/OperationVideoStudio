@@ -1,9 +1,18 @@
 # FFmpeg ライセンスと配布方針
 
-現時点では FFmpeg / FFprobe のバイナリをリポジトリにもインストーラーにも同梱せず、利用者が導入した実行ファイルを PATH から起動します。
+Web 版は、ブラウザ内で動く FFmpeg である ffmpeg.wasm を使います。
 
-FFmpeg の基本ライセンスは LGPL ですが、構成により GPL になります。本アプリが利用する libx264 を含む FFmpeg は通常 GPL 構成です。`--enable-nonfree` を使用したビルドは再配布できない場合があります。第三者のWindowsバイナリを無条件に同梱しないでください。
+| パッケージ | 用途 | ライセンス |
+| --- | --- | --- |
+| `@ffmpeg/ffmpeg` | ffmpeg.wasm を操作する JavaScript | MIT |
+| `@ffmpeg/core` | FFmpeg 本体を WebAssembly にしたもの（libx264 などを含む） | GPL-2.0-or-later |
 
-同梱する段階では、配布バイナリの `ffmpeg -L` / `ffmpeg -buildconf`、依存ライブラリ、ライセンス全文、著作権表示、対応ソースとビルド手順の提供方法を確認します。別プロセス実行という構成だけを理由にライセンス判断を省略しません。社外配布・社内配布の条件を確認してから配布方法を決定します。
+`@ffmpeg/core` はビルド時に `dist/assets/` に含まれ、このサイトから利用者のブラウザへ配信されます。Web サイトで配信することは、GPL の対象となるプログラムの配布にあたります。
 
-公式情報: https://ffmpeg.org/legal.html
+公開前に次を確認してください。
+
+- 配信している `@ffmpeg/core` のバージョンと、対応するソースコードの入手先（ffmpeg.wasm リポジトリ: https://github.com/ffmpegwasm/ffmpeg.wasm 、FFmpeg: https://ffmpeg.org/ ）を、利用者が確認できる場所に示す。
+- GPL の全文と著作権表示を利用者が確認できるようにする。
+- アプリ本体のコードと `@ffmpeg/core` の関係（別の Worker で動く別プログラムとして扱えるか）を含め、社内配布・社外公開の条件を確認する。社外に公開する場合は、法務部門などへの確認を推奨します。
+
+FFmpeg の公式情報: https://ffmpeg.org/legal.html

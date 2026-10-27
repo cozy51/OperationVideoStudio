@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { mediaUrl } from "./platform";
 import type { Media, AudioClip } from "./editor";
 export function AudioPlayback({
   items,
@@ -60,7 +60,7 @@ function AudioSource({
   return media ? (
     <audio
       ref={ref}
-      src={convertFileSrc(media.previewPath ?? media.path)}
+      src={mediaUrl(media)}
       preload="metadata"
     />
   ) : null;
